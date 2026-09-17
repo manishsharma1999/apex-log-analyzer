@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Apex Log Analyzer</title>
+    <link rel="stylesheet" href="app.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand">⚡ Apex Log Analyzer</div>
+      <div class="toolbar">
+        <select id="orgSelect" title="Salesforce org (from your sf CLI)"></select>
+        <button id="refreshBtn" title="Reload log list">↻ Refresh</button>
+        <button id="autoBtn" title="Auto-enable logging and auto-refresh new logs" class="on">● Auto-capture: ON</button>
+        <span class="spacer"></span>
+        <button id="settingsBtn" title="Claude settings">⚙ Settings</button>
+      </div>
+    </header>
+
+    <div id="statusBar" class="status hidden"></div>
+
+    <main class="layout">
+      <section class="pane list-pane">
+        <div class="list-header">
+          <input id="listFilter" type="search" placeholder="Filter by user / operation / status…" />
+          <span id="logCount" class="count"></span>
+        </div>
+        <div class="list-header sub">
+          <input id="contentSearch" type="search" placeholder="🔎 Search inside ALL log contents — type & press Enter" />
+          <button id="contentClear" title="Clear content search" class="hidden">✕</button>
+          <span id="searchInfo" class="count"></span>
+        </div>
+        <div class="table-wrap">
+          <table id="logTable">
+            <thead>
+              <tr>
+                <th>Time</th>
+                <th>User</th>
+                <th>Operation</th>
+                <th>Status</th>
+                <th>Duration</th>
+                <th>Size</th>
+              </tr>
+            </thead>
+            <tbody id="logRows"></tbody>
+          </table>
+          <div id="listEmpty" class="empty">No logs loaded. Pick an org and hit Refresh.</div>
+        </div>
+      </section>
+
+      <section class="pane viewer-pane">
+        <div class="viewer-header">
+          <div class="viewer-search">
+            <input id="logSearch" type="search" placeholder="Search within this log…" disabled />
+            <span id="matchInfo" class="count"></span>
+            <button id="prevMatch" title="Previous match" disabled>▲</button>
+            <button id="nextMatch" title="Next match" disabled>▼</button>
+          </div>
+          <div class="viewer-actions">
+            <input id="analyzeQuestion" type="text" placeholder="Optional: ask Claude a specific question…" disabled />
+            <button id="analyzeBtn" disabled>✨ Analyze with Claude</button>
+          </div>
+        </div>
+        <div class="viewer-body">
+          <pre id="logView" class="log-view"><span class="empty">Select a log on the left to view it.</span></pre>
+          <div id="analysisPanel" class="analysis hidden">
+            <div class="analysis-head">
+              <span>Claude Analysis</span>
+              <button id="closeAnalysis" title="Close">✕</button>
+            </div>
+            <div id="analysisContent" class="analysis-content"></div>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <div id="settingsModal" class="modal hidden">
+      <div class="modal-card">
+        <h2>Claude Settings</h2>
+        <label>Anthropic API key
+          <input id="apiKeyInput" type="password" placeholder="sk-ant-… (leave blank to keep current)" autocomplete="off" />
+        </label>
+        <label>Model
+          <select id="modelSelect">
+            <option value="claude-sonnet-5">Claude Sonnet 5 (balanced)</option>
+            <option value="claude-opus-5">Claude Opus 5 (most capable)</option>
+            <option value="claude-haiku-4-5-20251001">Claude Haiku 4.5 (fastest)</option>
+          </select>
+        </label>
+        <p class="hint" id="keyHint"></p>
+        <div class="modal-actions">
+          <button id="cancelSettings">Cancel</button>
+          <button id="saveSettings" class="primary">Save</button>
+        </div>
+      </div>
+    </div>
+
+    <script src="app.js"></script>
+  </body>
+</html>

@@ -1,0 +1,5 @@
+node_modules/
+*.log
+.DS_Store
+# never commit user settings (may contain an API key)
+.apex-log-analyzer.json
