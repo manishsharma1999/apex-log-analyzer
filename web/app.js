@@ -15,6 +15,7 @@ const state = {
   query: "",               // the single search box
   contentMatches: null,    // Map(id -> {snippet,count}) for text-in-body hits
   searchSeq: 0,
+  analysisAbort: null,     // AbortController for the in-flight Claude request
 };
 const POLL_MS = 5000;
 const MULTI_BUDGET = 150000; // total chars sent for multi-log analysis
@@ -393,6 +394,10 @@ function renderLog() {
 function hideAnalysis() {
   els.analysisPanel.classList.add("hidden");
   els.resizeAnalysis.classList.add("hidden");
+  // Closing the panel aborts any in-flight analysis and frees the buttons now.
+  if (state.analysisAbort) { state.analysisAbort.abort(); state.analysisAbort = null; }
+  els.analyzeBtn.disabled = !state.logBody;
+  els.analyzeSelected.disabled = state.checked.size === 0;
 }
 function markdownToHtml(md) {
   const lines = escapeHtml(md).split("\n");
@@ -420,10 +425,10 @@ function trimTo(text, budget) {
   const head = Math.floor(budget * 0.55);
   return text.slice(0, head) + `\n\n... [${text.length - budget} chars trimmed] ...\n\n` + text.slice(text.length - (budget - head));
 }
-async function getBody(id) {
+async function getBody(id, signal) {
   const up = findUpload(id);
   if (up) return up.body;
-  const res = await fetch(`/api/logbody?org=${encodeURIComponent(state.org)}&id=${id}`);
+  const res = await fetch(`/api/logbody?org=${encodeURIComponent(state.org)}&id=${id}`, { signal });
   if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || res.statusText);
   return res.text();
 }
@@ -444,10 +449,21 @@ function showAnalysisError(msg) {
   els.analysisContent.innerHTML = `<p style="color:var(--red)">${escapeHtml(msg)}</p>`;
 }
 
+function startAnalysis() {
+  if (state.analysisAbort) state.analysisAbort.abort();
+  const controller = new AbortController();
+  state.analysisAbort = controller;
+  return controller;
+}
+function endAnalysis(controller) {
+  if (state.analysisAbort === controller) state.analysisAbort = null;
+}
+
 async function runAnalysis() {
   if (state.selectedId == null) return;
   showAnalysisLoading("Claude Analysis");
   els.analyzeBtn.disabled = true;
+  const controller = startAnalysis();
   try {
     const up = findUpload(state.selectedId);
     const question = els.analyzeQuestion.value.trim();
@@ -455,13 +471,16 @@ async function runAnalysis() {
       ? { logText: up.body, question }
       : { org: state.org, id: state.selectedId, question };
     const { text } = await api("/api/analyze", {
-      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload),
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload), signal: controller.signal,
     });
     els.analysisContent.innerHTML = markdownToHtml(text);
   } catch (e) {
+    if (e.name === "AbortError") return; // user closed the panel
     showAnalysisError(e.message);
   } finally {
-    els.analyzeBtn.disabled = false;
+    endAnalysis(controller);
+    els.analyzeBtn.disabled = !state.logBody;
   }
 }
 
@@ -470,24 +489,28 @@ async function analyzeSelected() {
   if (!ids.length) return;
   showAnalysisLoading(`Claude Analysis — ${ids.length} logs`);
   els.analyzeSelected.disabled = true;
+  const controller = startAnalysis();
   try {
     const budget = Math.max(4000, Math.floor(MULTI_BUDGET / ids.length));
     const parts = [];
     for (let i = 0; i < ids.length; i++) {
-      const body = await getBody(ids[i]);
+      if (controller.signal.aborted) return;
+      const body = await getBody(ids[i], controller.signal);
       parts.push(`===== LOG ${i + 1} of ${ids.length}: ${labelFor(ids[i])} =====\n${trimTo(body, budget)}`);
     }
     const logText = parts.join("\n\n");
     const question = els.analyzeQuestion.value.trim();
     const { text } = await api("/api/analyze", {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ org: state.org, logText, question }),
+      body: JSON.stringify({ org: state.org, logText, question }), signal: controller.signal,
     });
     els.analysisContent.innerHTML = markdownToHtml(text);
   } catch (e) {
+    if (e.name === "AbortError") return; // user closed the panel
     showAnalysisError(e.message);
   } finally {
-    els.analyzeSelected.disabled = false;
+    endAnalysis(controller);
+    els.analyzeSelected.disabled = state.checked.size === 0;
   }
 }
 
