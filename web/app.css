@@ -36,6 +36,13 @@ body { display: flex; flex-direction: column; height: 100vh; }
 .brand { font-weight: 600; font-size: 15px; white-space: nowrap; }
 .toolbar { display: flex; align-items: center; gap: 8px; flex: 1; }
 .spacer { flex: 1; }
+.model-pick { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 12px; white-space: nowrap; }
+.model-pick select { padding: 5px 8px; }
+
+/* draggable pane dividers */
+.resizer { flex: 0 0 6px; cursor: col-resize; background: var(--border); }
+.resizer:hover, .resizer.active { background: var(--accent); }
+body.resizing { cursor: col-resize; user-select: none; }
 
 button, select, input {
   font: inherit;
@@ -67,7 +74,7 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
 
 .layout { flex: 1; display: flex; min-height: 0; }
 .pane { display: flex; flex-direction: column; min-height: 0; }
-.list-pane { width: 46%; min-width: 360px; border-right: 1px solid var(--border); }
+.list-pane { width: 46%; min-width: 240px; }
 .viewer-pane { flex: 1; min-width: 0; }
 
 .list-header {
@@ -149,7 +156,7 @@ tbody tr.selected { background: #1a2740; }
 
 .analysis {
   width: 42%;
-  min-width: 340px;
+  min-width: 260px;
   border-left: 1px solid var(--border);
   display: flex;
   flex-direction: column;

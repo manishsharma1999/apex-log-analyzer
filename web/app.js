@@ -8,7 +8,6 @@ const state = {
   filtered: [],      // normalized items currently shown (after search)
   selectedId: null,  // id of the item open in the viewer
   logBody: "",
-  matches: [], matchIndex: -1,
   auto: true,
   pollTimer: null,
   loggingReady: false,
@@ -25,14 +24,19 @@ let searchTimer = null;
 const $ = (id) => document.getElementById(id);
 const els = {};
 [
-  "orgSelect", "refreshBtn", "autoBtn", "uploadBtn", "fileInput", "settingsBtn", "statusBar",
+  "orgSelect", "refreshBtn", "autoBtn", "uploadBtn", "fileInput", "modelSelect", "statusBar",
   "search", "searchInfo", "logCount", "logRows", "listEmpty", "listPane", "dropHint",
-  "selectAll", "bulkBar", "selCount", "analyzeSelected", "clearSelected",
-  "matchInfo", "prevMatch", "nextMatch",
+  "selectAll", "bulkBar", "selCount", "analyzeSelected", "clearSelected", "matchInfo",
   "analyzeQuestion", "analyzeBtn", "logView",
+  "resizeMain", "resizeAnalysis",
   "analysisPanel", "analysisTitle", "analysisContent", "closeAnalysis",
-  "settingsModal", "apiKeyInput", "modelSelect", "saveSettings", "cancelSettings", "keyHint",
 ].forEach((id) => (els[id] = $(id)));
+
+// Cap on how much text we highlight in the viewer. Beyond this we still show
+// the whole log (as fast plain text) but skip per-match DOM so huge logs
+// (100k+ lines) never freeze the tab.
+const MAX_HIGHLIGHT_CHARS = 600000;
+const MAX_MARKS = 4000;
 
 // --- helpers --------------------------------------------------------------
 function status(msg, kind = "info") {
@@ -358,46 +362,38 @@ async function selectLog(id) {
 function renderLog() {
   const q = state.query.trim();
   const body = state.logBody;
-  if (!body) return;
-  if (!q) {
+  if (body == null) return;
+  // No search, or a log so large that building a highlighted DOM would hang the
+  // tab: show it as plain text (fast, safe for 100k+ lines / huge single lines).
+  if (!q || body.length > MAX_HIGHLIGHT_CHARS) {
     els.logView.textContent = body;
-    state.matches = []; state.matchIndex = -1;
-    return updateMatchInfo();
+    els.matchInfo.textContent = (q && body.length > MAX_HIGHLIGHT_CHARS)
+      ? "large log — highlighting off (⌘F to find)" : "";
+    return;
   }
   const re = new RegExp(rescape(q), "gi");
-  let html = "", last = 0, count = 0, m;
+  let html = "", last = 0, count = 0, m, capped = false;
   while ((m = re.exec(body)) !== null) {
     html += escapeHtml(body.slice(last, m.index));
-    html += `<mark data-i="${count}">${escapeHtml(m[0])}</mark>`;
+    html += `<mark>${escapeHtml(m[0])}</mark>`;
     last = m.index + m[0].length; count++;
     if (m.index === re.lastIndex) re.lastIndex++;
+    if (count >= MAX_MARKS) { capped = true; break; }
   }
   html += escapeHtml(body.slice(last));
   els.logView.innerHTML = html;
-  state.matches = [...els.logView.querySelectorAll("mark")];
-  state.matchIndex = state.matches.length ? 0 : -1;
-  focusMatch();
-  updateMatchInfo();
-}
-function updateMatchInfo() {
-  const n = state.matches.length;
-  els.matchInfo.textContent = n ? `${state.matchIndex + 1} / ${n}` : (state.query ? "0 in this log" : "");
-  els.prevMatch.disabled = n === 0;
-  els.nextMatch.disabled = n === 0;
-}
-function focusMatch() {
-  state.matches.forEach((el) => el.classList.remove("active"));
-  const el = state.matches[state.matchIndex];
-  if (el) { el.classList.add("active"); el.scrollIntoView({ block: "center", behavior: "smooth" }); }
-}
-function stepMatch(dir) {
-  if (!state.matches.length) return;
-  state.matchIndex = (state.matchIndex + dir + state.matches.length) % state.matches.length;
-  focusMatch(); updateMatchInfo();
+  els.matchInfo.textContent = count
+    ? `${count}${capped ? "+" : ""} match${count === 1 ? "" : "es"} in this log`
+    : "0 in this log";
+  const first = els.logView.querySelector("mark");
+  if (first) first.scrollIntoView({ block: "center", behavior: "smooth" });
 }
 
 // --- analysis -------------------------------------------------------------
-function hideAnalysis() { els.analysisPanel.classList.add("hidden"); }
+function hideAnalysis() {
+  els.analysisPanel.classList.add("hidden");
+  els.resizeAnalysis.classList.add("hidden");
+}
 function markdownToHtml(md) {
   const lines = escapeHtml(md).split("\n");
   let html = "", inList = false;
@@ -441,11 +437,11 @@ function labelFor(id) {
 function showAnalysisLoading(title) {
   els.analysisTitle.textContent = title;
   els.analysisPanel.classList.remove("hidden");
+  els.resizeAnalysis.classList.remove("hidden");
   els.analysisContent.innerHTML = '<p><span class="spinner"></span> Analyzing with Claude…</p>';
 }
 function showAnalysisError(msg) {
   els.analysisContent.innerHTML = `<p style="color:var(--red)">${escapeHtml(msg)}</p>`;
-  if (/api key/i.test(msg)) openSettings();
 }
 
 async function runAnalysis() {
@@ -495,19 +491,47 @@ async function analyzeSelected() {
   }
 }
 
-// --- settings -------------------------------------------------------------
-async function openSettings() {
+// --- model picker ---------------------------------------------------------
+async function loadModel() {
   try {
     const s = await api("/api/settings");
-    els.modelSelect.value = s.model;
-    els.apiKeyInput.value = "";
-    els.keyHint.textContent = s.keyFromEnv
-      ? "Using the ANTHROPIC_API_KEY environment variable for analysis."
-      : s.hasKey
-        ? "An API key is saved and used for analysis. Clear it to fall back to the local Claude Code CLI."
-        : "No API key needed — analysis uses your local Claude Code CLI (claude) by default. Optionally paste an Anthropic API key to use the API instead.";
+    if (s.model) els.modelSelect.value = s.model;
   } catch {}
-  els.settingsModal.classList.remove("hidden");
+}
+async function saveModel() {
+  try {
+    await api("/api/settings", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model: els.modelSelect.value }),
+    });
+  } catch (e) { status(`Could not save model: ${e.message}`, "error"); }
+}
+
+// --- draggable pane dividers ----------------------------------------------
+// dir = +1 when the resized pane is to the LEFT of the divider (dragging right
+// grows it), -1 when it's to the RIGHT (dragging right shrinks it).
+function makeResizer(resizer, target, dir) {
+  let startX = 0, startW = 0, active = false;
+  const onMove = (e) => {
+    if (!active) return;
+    const w = startW + (e.clientX - startX) * dir;
+    target.style.width = Math.max(220, Math.min(w, window.innerWidth - 260)) + "px";
+  };
+  const onUp = () => {
+    active = false;
+    resizer.classList.remove("active");
+    document.body.classList.remove("resizing");
+    window.removeEventListener("mousemove", onMove);
+    window.removeEventListener("mouseup", onUp);
+  };
+  resizer.addEventListener("mousedown", (e) => {
+    active = true; startX = e.clientX; startW = target.getBoundingClientRect().width;
+    resizer.classList.add("active");
+    document.body.classList.add("resizing");
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+    e.preventDefault();
+  });
 }
 
 function bindDragDrop() {
@@ -538,26 +562,18 @@ function bind() {
   });
   els.analyzeSelected.addEventListener("click", analyzeSelected);
   els.clearSelected.addEventListener("click", clearSelection);
-  els.prevMatch.addEventListener("click", () => stepMatch(-1));
-  els.nextMatch.addEventListener("click", () => stepMatch(1));
   els.analyzeBtn.addEventListener("click", runAnalysis);
   els.analyzeQuestion.addEventListener("keydown", (e) => { if (e.key === "Enter") runAnalysis(); });
   els.closeAnalysis.addEventListener("click", hideAnalysis);
-  els.settingsBtn.addEventListener("click", openSettings);
-  els.cancelSettings.addEventListener("click", () => els.settingsModal.classList.add("hidden"));
-  els.saveSettings.addEventListener("click", async () => {
-    const payload = { model: els.modelSelect.value };
-    if (els.apiKeyInput.value.trim()) payload.apiKey = els.apiKeyInput.value.trim();
-    await api("/api/settings", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
-    els.settingsModal.classList.add("hidden");
-    status("Settings saved.", "success");
-    setTimeout(clearStatus, 2000);
-  });
+  els.modelSelect.addEventListener("change", saveModel);
+  makeResizer(els.resizeMain, els.listPane, +1);
+  makeResizer(els.resizeAnalysis, els.analysisPanel, -1);
   bindDragDrop();
 }
 
 async function init() {
   bind();
+  loadModel();
   await loadOrgs();
   if (els.orgSelect.value) await startCapture();
   else applyFilter();

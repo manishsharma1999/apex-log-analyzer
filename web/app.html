@@ -16,7 +16,13 @@
         <button id="uploadBtn" title="Upload one or more .log files">⬆ Upload .log</button>
         <input id="fileInput" type="file" accept=".log,.txt,text/plain" multiple hidden />
         <span class="spacer"></span>
-        <button id="settingsBtn" title="Claude settings">⚙ Settings</button>
+        <label class="model-pick" title="Claude model used for analysis">Model
+          <select id="modelSelect">
+            <option value="claude-sonnet-5">Sonnet 5 (balanced)</option>
+            <option value="claude-opus-5">Opus 5 (most capable)</option>
+            <option value="claude-haiku-4-5-20251001">Haiku 4.5 (fastest)</option>
+          </select>
+        </label>
       </div>
     </header>
 
@@ -55,6 +61,8 @@
         </div>
       </section>
 
+      <div class="resizer" id="resizeMain" title="Drag to resize"></div>
+
       <section class="pane viewer-pane">
         <div class="viewer-header">
           <div class="viewer-actions">
@@ -62,12 +70,11 @@
             <button id="analyzeBtn" disabled>✨ Analyze with Claude</button>
             <span class="spacer"></span>
             <span id="matchInfo" class="count"></span>
-            <button id="prevMatch" title="Previous match" disabled>▲</button>
-            <button id="nextMatch" title="Next match" disabled>▼</button>
           </div>
         </div>
         <div class="viewer-body">
           <pre id="logView" class="log-view"><span class="empty">Select a log on the left to view it.</span></pre>
+          <div class="resizer hidden" id="resizeAnalysis" title="Drag to resize"></div>
           <div id="analysisPanel" class="analysis hidden">
             <div class="analysis-head">
               <span id="analysisTitle">Claude Analysis</span>
@@ -78,27 +85,6 @@
         </div>
       </section>
     </main>
-
-    <div id="settingsModal" class="modal hidden">
-      <div class="modal-card">
-        <h2>Claude Settings</h2>
-        <label>Anthropic API key
-          <input id="apiKeyInput" type="password" placeholder="sk-ant-… (leave blank to keep current)" autocomplete="off" />
-        </label>
-        <label>Model
-          <select id="modelSelect">
-            <option value="claude-sonnet-5">Claude Sonnet 5 (balanced)</option>
-            <option value="claude-opus-5">Claude Opus 5 (most capable)</option>
-            <option value="claude-haiku-4-5-20251001">Claude Haiku 4.5 (fastest)</option>
-          </select>
-        </label>
-        <p class="hint" id="keyHint"></p>
-        <div class="modal-actions">
-          <button id="cancelSettings">Cancel</button>
-          <button id="saveSettings" class="primary">Save</button>
-        </div>
-      </div>
-    </div>
 
     <script src="app.js"></script>
   </body>
