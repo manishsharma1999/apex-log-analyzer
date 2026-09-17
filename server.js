@@ -387,19 +387,30 @@ function openBrowser(url) {
   execFile(cmd, [url], () => {}); // best-effort; ignore failures
 }
 
-// Bind to the requested port, falling back to the next few if it's taken so a
-// second copy (or a leftover process) doesn't crash the launch.
-function listen(port, attemptsLeft = 10) {
-  server.once("error", (err) => {
-    if (err.code === "EADDRINUSE" && attemptsLeft > 0) {
-      console.log(`  Port ${port} is busy — trying ${port + 1}…`);
-      listen(port + 1, attemptsLeft - 1);
+// Find and bind the first free port instead of relying on a fixed one: try the
+// preferred port and the next several, and if they're all taken, fall back to
+// an OS-assigned ephemeral port (0) so the app always starts on *some* port.
+function startServer(preferred) {
+  const candidates = [];
+  for (let i = 0; i < 20; i++) candidates.push(preferred + i);
+  candidates.push(0); // last resort: let the OS pick any open port
+  let idx = 0;
+
+  const onError = (err) => {
+    if (err.code === "EADDRINUSE" && idx < candidates.length - 1) {
+      console.log(`  Port ${candidates[idx]} is in use — trying the next available port…`);
+      idx++;
+      server.listen(candidates[idx], "127.0.0.1");
     } else {
       console.error(`  Could not start server: ${err.message}`);
       process.exit(1);
     }
-  });
-  server.listen(port, "127.0.0.1", () => {
+  };
+
+  server.on("error", onError);
+  server.once("listening", () => {
+    server.removeListener("error", onError);
+    const port = server.address().port;
     const url = `http://localhost:${port}`;
     console.log(`\n  ⚡ Apex Log Analyzer running at  ${url}\n`);
     console.log(`  Reading the Salesforce session from Chrome — just log into your org in Chrome.`);
@@ -408,5 +419,7 @@ function listen(port, attemptsLeft = 10) {
     if (!getApiKey()) console.log(`  Claude analysis uses your local "claude" CLI — no API key needed.\n`);
     openBrowser(url);
   });
+
+  server.listen(candidates[idx], "127.0.0.1");
 }
-listen(Number(PORT));
+startServer(Number(PORT) || 8787);
