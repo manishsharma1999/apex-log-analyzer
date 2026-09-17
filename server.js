@@ -233,6 +233,8 @@ The slowest operations/methods and any obvious bottlenecks (long DURATION values
 ## Root Cause & Recommendations
 The likely root cause of any problem and specific, actionable fixes.
 
+If multiple logs are provided (separated by "===== LOG … =====" markers), analyze them together as one operation: cover each where relevant and call out patterns or causes that span the logs.
+
 Be precise, reference concrete values from the log, and use Markdown.`;
 
 const MAX_LOG_CHARS = 160000;
@@ -290,8 +292,10 @@ function analyzeViaCli(instruction, stdinText) {
   });
 }
 
-async function analyze({ apiHost, id, question }) {
-  const body = await getLogBody(apiHost, id);
+async function analyze({ apiHost, id, question, logText }) {
+  // logText is supplied directly by the client for uploaded files and for
+  // multi-log ("analyze selected") requests; otherwise fetch the one log by id.
+  const body = (logText != null && logText !== "") ? String(logText) : await getLogBody(apiHost, id);
   const { text, truncated } = truncateLog(body);
   const truncNote = truncated ? "\nNote: this log was trimmed (head + tail kept) because it is large." : "";
   const apiKey = getApiKey();
@@ -346,8 +350,8 @@ const server = http.createServer(async (req, res) => {
       const { org } = await readBody(req); return sendJson(res, 200, await enableLogging(org));
     }
     if (p === "/api/analyze" && req.method === "POST") {
-      const { org, id, question } = await readBody(req);
-      return sendJson(res, 200, { text: await analyze({ apiHost: org, id, question }) });
+      const { org, id, question, logText } = await readBody(req);
+      return sendJson(res, 200, { text: await analyze({ apiHost: org, id, question, logText }) });
     }
     if (p === "/api/settings") {
       if (req.method === "POST") {

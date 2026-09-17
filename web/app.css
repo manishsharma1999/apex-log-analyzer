@@ -80,11 +80,23 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
 .list-header input { flex: 1; }
 .list-header.sub { border-top: none; padding-top: 0; }
 .list-header.sub input { border-color: var(--accent-2); }
+.bulkbar { background: #14293f; padding: 8px; }
+.bulkbar #selCount { color: #9dc7ff; font-weight: 600; }
 .count { color: var(--muted); font-size: 12px; white-space: nowrap; }
+th.chk, td.chk { width: 30px; text-align: center; padding-left: 8px; padding-right: 0; }
+td.chk input, th.chk input { cursor: pointer; width: 15px; height: 15px; vertical-align: middle; }
+.status-pill.up { background: #2a2140; color: var(--accent-2); }
 .snippet { color: var(--muted); font-size: 11px; font-family: ui-monospace, monospace; padding: 0 10px 7px; border-bottom: 1px solid var(--border); }
 .snippet mark { background: var(--mark); color: #000; }
 
 .table-wrap { flex: 1; overflow: auto; position: relative; }
+.list-pane.dragging { outline: 2px dashed var(--accent); outline-offset: -4px; }
+.drop-hint {
+  position: absolute; inset: 0;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(10,14,20,0.85); color: var(--accent);
+  font-size: 15px; font-weight: 600; pointer-events: none; z-index: 5;
+}
 table { width: 100%; border-collapse: collapse; }
 thead th {
   position: sticky;

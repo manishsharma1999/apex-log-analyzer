@@ -10,9 +10,11 @@
     <header class="topbar">
       <div class="brand">⚡ Apex Log Analyzer</div>
       <div class="toolbar">
-        <select id="orgSelect" title="Salesforce org (from your sf CLI)"></select>
+        <select id="orgSelect" title="Salesforce org (from your Chrome session)"></select>
         <button id="refreshBtn" title="Reload log list">↻ Refresh</button>
         <button id="autoBtn" title="Auto-enable logging and auto-refresh new logs" class="on">● Auto-capture: ON</button>
+        <button id="uploadBtn" title="Upload one or more .log files">⬆ Upload .log</button>
+        <input id="fileInput" type="file" accept=".log,.txt,text/plain" multiple hidden />
         <span class="spacer"></span>
         <button id="settingsBtn" title="Claude settings">⚙ Settings</button>
       </div>
@@ -21,20 +23,23 @@
     <div id="statusBar" class="status hidden"></div>
 
     <main class="layout">
-      <section class="pane list-pane">
+      <section class="pane list-pane" id="listPane">
         <div class="list-header">
-          <input id="listFilter" type="search" placeholder="Filter by user / operation / status…" />
+          <input id="search" type="search" placeholder="🔎 Search all logs — user, operation, status, or any text inside…" />
+          <span id="searchInfo" class="count"></span>
           <span id="logCount" class="count"></span>
         </div>
-        <div class="list-header sub">
-          <input id="contentSearch" type="search" placeholder="🔎 Search inside ALL log contents — type & press Enter" />
-          <button id="contentClear" title="Clear content search" class="hidden">✕</button>
-          <span id="searchInfo" class="count"></span>
+        <div class="list-header sub bulkbar hidden" id="bulkBar">
+          <span id="selCount" class="count"></span>
+          <span class="spacer"></span>
+          <button id="analyzeSelected" class="primary">✨ Analyze selected together</button>
+          <button id="clearSelected">Clear</button>
         </div>
         <div class="table-wrap">
           <table id="logTable">
             <thead>
               <tr>
+                <th class="chk"><input id="selectAll" type="checkbox" title="Select all shown" /></th>
                 <th>Time</th>
                 <th>User</th>
                 <th>Operation</th>
@@ -45,28 +50,27 @@
             </thead>
             <tbody id="logRows"></tbody>
           </table>
-          <div id="listEmpty" class="empty">No logs loaded. Pick an org and hit Refresh.</div>
+          <div id="listEmpty" class="empty">No logs yet. Log into an org in Chrome, or ⬆ upload .log files.</div>
+          <div id="dropHint" class="drop-hint hidden">Drop .log files to add them</div>
         </div>
       </section>
 
       <section class="pane viewer-pane">
         <div class="viewer-header">
-          <div class="viewer-search">
-            <input id="logSearch" type="search" placeholder="Search within this log…" disabled />
-            <span id="matchInfo" class="count"></span>
-            <button id="prevMatch" title="Previous match" disabled>▲</button>
-            <button id="nextMatch" title="Next match" disabled>▼</button>
-          </div>
           <div class="viewer-actions">
             <input id="analyzeQuestion" type="text" placeholder="Optional: ask Claude a specific question…" disabled />
             <button id="analyzeBtn" disabled>✨ Analyze with Claude</button>
+            <span class="spacer"></span>
+            <span id="matchInfo" class="count"></span>
+            <button id="prevMatch" title="Previous match" disabled>▲</button>
+            <button id="nextMatch" title="Next match" disabled>▼</button>
           </div>
         </div>
         <div class="viewer-body">
           <pre id="logView" class="log-view"><span class="empty">Select a log on the left to view it.</span></pre>
           <div id="analysisPanel" class="analysis hidden">
             <div class="analysis-head">
-              <span>Claude Analysis</span>
+              <span id="analysisTitle">Claude Analysis</span>
               <button id="closeAnalysis" title="Close">✕</button>
             </div>
             <div id="analysisContent" class="analysis-content"></div>
