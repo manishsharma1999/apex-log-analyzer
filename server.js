@@ -337,6 +337,7 @@ const server = http.createServer(async (req, res) => {
   const p = u.pathname;
   try {
     if (!p.startsWith("/api/")) return serveStatic(res, p);
+    if (p === "/api/ping") return sendJson(res, 200, { app: "apex-log-analyzer" });
     if (p === "/api/orgs") return sendJson(res, 200, { orgs: listOrgsForUi() });
     if (p === "/api/diag") return sendJson(res, 200, diagnose());
     if (p === "/api/logs") return sendJson(res, 200, { records: await listLogs(u.searchParams.get("org")) });
@@ -387,12 +388,37 @@ function openBrowser(url) {
   execFile(cmd, [url], () => {}); // best-effort; ignore failures
 }
 
+// Is our app already answering on this port? (Used to avoid starting a second
+// instance — which would open a second browser tab on a different port.)
+function pingApp(port) {
+  return new Promise((resolve) => {
+    const req = http.get({ host: "127.0.0.1", port, path: "/api/ping", timeout: 300 }, (res) => {
+      let d = ""; res.on("data", (c) => (d += c));
+      res.on("end", () => { try { resolve(JSON.parse(d).app === "apex-log-analyzer"); } catch { resolve(false); } });
+    });
+    req.on("error", () => resolve(false));
+    req.on("timeout", () => { req.destroy(); resolve(false); });
+  });
+}
+
 // Find and bind the first free port instead of relying on a fixed one: try the
 // preferred port and the next several, and if they're all taken, fall back to
 // an OS-assigned ephemeral port (0) so the app always starts on *some* port.
-function startServer(preferred) {
+async function startServer(preferred) {
   const candidates = [];
   for (let i = 0; i < 20; i++) candidates.push(preferred + i);
+
+  // Single instance: if a copy is already running, just open it and exit
+  // instead of launching a duplicate server (which caused a second tab).
+  for (const p of candidates) {
+    if (await pingApp(p)) {
+      const url = `http://localhost:${p}`;
+      console.log(`\n  ⚡ Apex Log Analyzer is already running at  ${url}  — opening it.\n`);
+      openBrowser(url);
+      return process.exit(0);
+    }
+  }
+
   candidates.push(0); // last resort: let the OS pick any open port
   let idx = 0;
 
