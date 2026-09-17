@@ -11,28 +11,32 @@ logging, and streams new logs as they happen.
 - Multiple logged-in orgs → pick one from a dropdown.
 - Search **inside all captured log bodies**, plus per-log find.
 
-> macOS only. Reads Chrome's cookie store locally; nothing is uploaded anywhere.
+> macOS only. Everything runs on your own machine — see **Privacy** below.
 
 ---
 
-## Run it (no install)
+## Run it — nothing to install
 
-You need **[Node.js 22+](https://nodejs.org)** and **Google Chrome**, with at
-least one Salesforce org open in Chrome.
+1. Have **Google Chrome** open and logged into a Salesforce org.
+2. Double-click **`Apex Log Analyzer.command`**.
+
+That's it. The first run quietly sets up a private Node runtime inside the app
+folder (one-time, ~30 MB) if your Mac doesn't already have a recent Node, then
+opens `http://localhost:8787` in your browser. No Node install, no `npm install`
+(the tool has zero dependencies), no configuration.
+
+> **Gatekeeper note:** if macOS says the file "can't be opened because it is
+> from an unidentified developer," **right-click it → Open → Open** once. After
+> that, double-click works normally.
+
+### For developers
+
+If you already have **Node 24 (or 22.13+)**:
 
 ```bash
+npm start          # == node server.js
+# or, straight from the repo, no clone:
 npx github:YOUR-ORG/apex-log-analyzer
-```
-
-That's it — it downloads, starts, and opens `http://localhost:8787` in your
-browser. (The tool has no dependencies, so there's nothing to install.)
-
-### Or clone and run
-
-```bash
-git clone https://github.com/YOUR-ORG/apex-log-analyzer.git
-cd apex-log-analyzer
-npm start        # == node server.js
 ```
 
 ---
@@ -74,8 +78,18 @@ Prefer the Anthropic API? Open **⚙ Settings** and paste an `ANTHROPIC_API_KEY`
 - **Analysis says `claude` not found** — install the Claude Code CLI, or add an
   API key in Settings.
 
-## Privacy
+## Privacy — everything is local
 
-Everything runs locally. Your Salesforce session, log bodies, and any API key
-never leave your machine except the Salesforce API calls (to your own org) and,
-if you analyze a log, the log text sent to Claude via your CLI/API key.
+There is **no central/shared server**. Each person runs their own copy on their
+own Mac; your logs never flow to the author or to any third-party service.
+
+What actually uses the network:
+
+- **Capture, search, view** — the only calls are to **your own Salesforce org's**
+  API to *fetch* your logs. Nothing about your logs is sent outward.
+- **"Analyze with Claude"** *(only when you click it)* — the selected log's text
+  goes to Claude through **your own** `claude` CLI / Anthropic account, exactly
+  as if you pasted it into Claude yourself. Nothing is sent automatically.
+
+Your Salesforce session and any saved API key stay in
+`~/.apex-log-analyzer.json` (mode `600`) on your machine.

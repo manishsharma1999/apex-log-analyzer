@@ -13,6 +13,19 @@ const fs = require("fs");
 const path = require("path");
 const os = require("os");
 const { execFile } = require("child_process");
+
+// chrome-session.js relies on the built-in node:sqlite module, which is only
+// usable (without a flag) on Node 22.13+ / 24+. Check up front and fail with a
+// clear message instead of a cryptic require error.
+try {
+  require("node:sqlite");
+} catch {
+  console.error(`\n  Apex Log Analyzer needs a newer Node.js (you have ${process.version}).`);
+  console.error(`  Please use Node 24 LTS (or 22.13+). The double-click launcher installs`);
+  console.error(`  a compatible Node automatically; or get it from https://nodejs.org\n`);
+  process.exit(1);
+}
+
 const { detectOrgSessions, diagnose } = require("./chrome-session");
 
 const PORT = process.env.PORT || 8787;
