@@ -48,31 +48,41 @@ all read-only, all powered by the same local Claude:
 
 ## Run it — nothing to install
 
-1. Have **Google Chrome** open and logged into a Salesforce org.
-2. Double-click **`Apex Log Analyzer.app`**.
+First, have **Google Chrome** open and logged into a Salesforce org. Then pick
+one of these (all macOS only):
 
-That's it — no Terminal window. The first run quietly sets up a private Node
-runtime (one-time, ~30 MB, into `~/Library/Application Support/Apex Log Analyzer`)
-if your Mac doesn't already have a recent Node, then opens the app in your
-browser on a free local port. No Node install, no `npm install` (the tool has
-zero dependencies), no configuration. Quit the app to stop the server.
-
-> **Gatekeeper note:** the app is unsigned, so the first time macOS may say
-> *"Apple could not verify … is free of malware."* Click **Done** (not "Move to
-> Trash"), then open **System Settings → Privacy & Security**, scroll down, and
-> click **"Open Anyway"**. After that, double-click works normally.
->
-> Prefer Terminal? `xattr -r -d com.apple.quarantine "/path/to/Apex Log Analyzer.app"`
-> clears it in one go.
-
-### For developers
-
-Build the `.app` from source, or run the server directly (needs **Node 24 / 22.13+**):
+### Recommended — clone from GitHub (no security prompt)
 
 ```bash
-./build-app.sh     # -> dist/Apex Log Analyzer.app  + ~/Apex Log Analyzer.zip
-npm start          # == node server.js  (runs the server in this Terminal)
+git clone https://github.com/manishsharma1999/apex-log-analyzer.git
+cd apex-log-analyzer
+npm start          # == node server.js — opens the app in your browser
 ```
+
+Or double-click **`Apex Log Analyzer.command`** in the cloned folder instead of
+`npm start`. Or skip the clone entirely with one command:
+
+```bash
+npx github:manishsharma1999/apex-log-analyzer
+```
+
+Because these files come from `git`/`npx` (not a download), macOS does **not**
+show any *"Open Anyway"* / unsigned-app prompt. The first run quietly sets up a
+private Node runtime (one-time, ~30 MB, into
+`~/Library/Application Support/Apex Log Analyzer`) if your Mac doesn't already
+have **Node 24 / 22.13+**. No `npm install` (the tool has zero dependencies), no
+configuration. Stop it with `Ctrl-C` (or quit the app).
+
+### Alternative — the `.app` bundle
+
+Build it from source with `./build-app.sh` (→ `dist/Apex Log Analyzer.app` +
+`~/Apex Log Analyzer.zip`), then double-click the app — no Terminal window.
+
+> **Gatekeeper note:** the `.app` is unsigned, so a **downloaded** copy may show
+> *"Apple could not verify … is free of malware."* Click **Done**, then open
+> **System Settings → Privacy & Security**, scroll down, and click **"Open
+> Anyway"** (or run `xattr -r -d com.apple.quarantine "/path/to/Apex Log Analyzer.app"`).
+> The clone/`npx` route above avoids this entirely.
 
 ---
 
