@@ -4,17 +4,22 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Apex Log Analyzer</title>
+    <link rel="icon" type="image/png" href="logo.png" />
     <link rel="stylesheet" href="app.css" />
   </head>
   <body>
     <header class="topbar">
-      <div class="brand">⚡ Apex Log Analyzer</div>
+      <div class="brand">
+        <img class="app-logo" src="logo.png" alt="" />
+        <span>Apex Log Analyzer</span>
+      </div>
       <div class="toolbar">
         <select id="orgSelect" title="Salesforce org (from your Chrome session)"></select>
         <button id="refreshBtn" title="Reload log list">↻ Refresh</button>
-        <button id="autoBtn" title="Auto-enable logging and auto-refresh new logs" class="on">● Auto-capture: ON</button>
+        <button id="autoBtn" title="Auto-refresh the log list every few seconds (does not create trace flags — manage debug logging yourself in Setup)" class="on">● Auto-refresh: ON</button>
         <button id="uploadBtn" title="Upload one or more .log files">⬆ Upload .log</button>
         <input id="fileInput" type="file" accept=".log,.txt,text/plain" multiple hidden />
+        <button id="onSaveBtn" title="See what automation fires when an object is saved (order of execution)">🔀 On Save</button>
         <span class="spacer"></span>
         <label class="model-pick" title="Claude model used for analysis">Model
           <select id="modelSelect">
@@ -32,20 +37,31 @@
       <section class="pane list-pane" id="listPane">
         <div class="list-header">
           <input id="search" type="search" placeholder="🔎 Search all logs — user, operation, status, or any text inside…" />
+          <span id="matchInfo" class="count"></span>
           <span id="searchInfo" class="count"></span>
           <span id="logCount" class="count"></span>
         </div>
         <div class="list-header sub bulkbar hidden" id="bulkBar">
           <span id="selCount" class="count"></span>
           <span class="spacer"></span>
-          <button id="analyzeSelected" class="primary">✨ Analyze selected together</button>
-          <button id="clearSelected">Clear</button>
+          <button id="compareBtn" title="Compare one set of logs against another with Claude">⇄ Compare</button>
+          <button id="codeHealthBtn" title="Review the Apex that ran in the selected log(s) for issues">🩺 Code Health</button>
+          <button id="downloadSelected" class="hidden" title="Download the selected logs as .log files">⬇ Download selected</button>
+          <button id="analyzeSelected" class="primary">✨ Analyze this log</button>
+        </div>
+        <div class="list-header sub comparebar hidden" id="compareBar">
+          <span id="compareStep" class="count"></span>
+          <span class="spacer"></span>
+          <button id="compareCancel" title="Leave compare mode">Cancel</button>
+          <button id="compareNext" class="primary">Next ▶</button>
+          <button id="compareRun" class="primary hidden">⇄ Compare</button>
         </div>
         <div class="table-wrap">
           <table id="logTable">
             <thead>
               <tr>
                 <th class="chk"><input id="selectAll" type="checkbox" title="Select all shown" /></th>
+                <th class="dl"></th>
                 <th>Time</th>
                 <th>User</th>
                 <th>Operation</th>
@@ -64,16 +80,16 @@
       <div class="resizer" id="resizeMain" title="Drag to resize"></div>
 
       <section class="pane viewer-pane">
-        <div class="viewer-header">
-          <div class="viewer-actions">
-            <input id="analyzeQuestion" type="text" placeholder="Optional: ask Claude a specific question…" disabled />
-            <button id="analyzeBtn" disabled>✨ Analyze with Claude</button>
-            <span class="spacer"></span>
-            <span id="matchInfo" class="count"></span>
-          </div>
-        </div>
         <div class="viewer-body">
-          <pre id="logView" class="log-view"><span class="empty">Select a log on the left to view it.</span></pre>
+          <div class="viewer-main">
+            <div class="viewer-toolbar">
+              <button id="viewRaw" class="seg on" title="Raw log view">📄 Raw</button>
+              <button id="viewProfile" class="seg" title="Performance profile: timings + governor limits">⏱ Profile</button>
+              <span class="spacer"></span>
+              <button id="explainProfile" class="hidden" title="Ask Claude to explain this profile">✨ Explain</button>
+            </div>
+            <pre id="logView" class="log-view" tabindex="0"><span class="empty">Select a log on the left to view it.</span></pre>
+          </div>
           <div class="resizer hidden" id="resizeAnalysis" title="Drag to resize"></div>
           <div id="analysisPanel" class="analysis hidden">
             <div class="analysis-head">
@@ -81,6 +97,10 @@
               <button id="closeAnalysis" title="Close">✕</button>
             </div>
             <div id="analysisContent" class="analysis-content"></div>
+            <div class="analysis-chat">
+              <input id="chatInput" type="text" placeholder="Ask a follow-up about these logs…" disabled />
+              <button id="chatSend" class="primary" disabled>Send</button>
+            </div>
           </div>
         </div>
       </section>

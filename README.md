@@ -2,8 +2,13 @@
 
 Capture, search, and **Claude-analyze** Salesforce Apex debug logs from a local
 web app — with **zero manual setup**. It reads your Salesforce session straight
-from Chrome (whatever org you're logged into just shows up), auto-enables debug
-logging, and streams new logs as they happen.
+from Chrome (whatever org you're logged into just shows up) and auto-refreshes
+the log list so new logs appear on their own.
+
+> **Read-only:** the app only ever *reads* from your org (all Salesforce calls
+> are HTTP GET — list logs + fetch log bodies). It does not create trace flags,
+> debug levels, or any other records — manage debug logging yourself in
+> **Setup → Debug Logs**.
 
 - **No browser extension** (works even on MDM-managed Chrome).
 - **No `sf` CLI login, no session pasting** — the session comes from Chrome.
@@ -15,28 +20,58 @@ logging, and streams new logs as they happen.
 
 ---
 
+## What it can do
+
+Beyond capture / search / analyze, the viewer and toolbar add developer tools —
+all read-only, all powered by the same local Claude:
+
+- **⏱ Performance Profile** — toggle any open log from **Raw** to **Profile** to see
+  a timing breakdown (total & self time per method / trigger / SOQL / DML, slowest
+  first) plus governor-limit usage bars (SOQL, DML, query rows, CPU…). **✨ Explain**
+  hands the profile to Claude for a plain-language read.
+- **Follow-up chat** — after an analysis, keep chatting with Claude about the same
+  logs like a normal conversation. Two things happen automatically (no API key, no
+  extra clicks): ask about a **SOQL query plan** and the app fetches the read-only
+  `?explain=` plan for the queries in the log; ask about a **user's permissions**
+  (the one who ran the transaction, or anyone you name) and it reads their profile,
+  permission sets, and object CRUD/FLS — then Claude answers with that context.
+- **⇄ Compare** — compare one set of logs against another (N-vs-M, since one save can
+  fire several dependent logs). Pick the first group → **Next** → pick the second →
+  **Compare**, and Claude reads both sides together to explain what changed.
+- **🩺 Code Health** — reviews the Apex classes/triggers that actually ran in the
+  selected log(s) — pulled read-only from the Tooling API — for bulkification, SOQL/DML
+  in loops, missing null checks, and other issues.
+- **🔀 On Save** — pick an object and see the full **order of execution**: triggers,
+  validation rules, flows, and workflow rules that fire when a record is saved.
+
+---
+
 ## Run it — nothing to install
 
 1. Have **Google Chrome** open and logged into a Salesforce org.
-2. Double-click **`Apex Log Analyzer.command`**.
+2. Double-click **`Apex Log Analyzer.app`**.
 
-That's it. The first run quietly sets up a private Node runtime inside the app
-folder (one-time, ~30 MB) if your Mac doesn't already have a recent Node, then
-opens `http://localhost:8787` in your browser. No Node install, no `npm install`
-(the tool has zero dependencies), no configuration.
+That's it — no Terminal window. The first run quietly sets up a private Node
+runtime (one-time, ~30 MB, into `~/Library/Application Support/Apex Log Analyzer`)
+if your Mac doesn't already have a recent Node, then opens the app in your
+browser on a free local port. No Node install, no `npm install` (the tool has
+zero dependencies), no configuration. Quit the app to stop the server.
 
-> **Gatekeeper note:** if macOS says the file "can't be opened because it is
-> from an unidentified developer," **right-click it → Open → Open** once. After
-> that, double-click works normally.
+> **Gatekeeper note:** the app is unsigned, so the first time macOS may say
+> *"Apple could not verify … is free of malware."* Click **Done** (not "Move to
+> Trash"), then open **System Settings → Privacy & Security**, scroll down, and
+> click **"Open Anyway"**. After that, double-click works normally.
+>
+> Prefer Terminal? `xattr -r -d com.apple.quarantine "/path/to/Apex Log Analyzer.app"`
+> clears it in one go.
 
 ### For developers
 
-If you already have **Node 24 (or 22.13+)**:
+Build the `.app` from source, or run the server directly (needs **Node 24 / 22.13+**):
 
 ```bash
-npm start          # == node server.js
-# or, straight from the repo, no clone:
-npx github:YOUR-ORG/apex-log-analyzer
+./build-app.sh     # -> dist/Apex Log Analyzer.app  + ~/Apex Log Analyzer.zip
+npm start          # == node server.js  (runs the server in this Terminal)
 ```
 
 ---
@@ -53,9 +88,14 @@ you're not asked again. Nothing leaves your machine.
 Analysis works out of the box if you have the **Claude Code CLI** (`claude`)
 installed and logged in — the tool shells out to it, so no API key is needed.
 
-Prefer the Anthropic API? Open **⚙ Settings** and paste an `ANTHROPIC_API_KEY`
-(or set it as an environment variable). Keys are stored only in
-`~/.apex-log-analyzer.json` on your machine (mode `600`).
+Prefer the Anthropic API? Set an `ANTHROPIC_API_KEY` environment variable (or put
+`{"apiKey":"…"}` in `~/.apex-log-analyzer.json`). Keys stay only in that file on
+your machine (mode `600`). Pick the model from the **Model** dropdown in the toolbar.
+
+Click a log (or tick several) and use the **✨ Analyze** button — it targets the
+open log, or every ticked log ("Analyze N logs"). Then ask **follow-up questions**
+in the chat box at the bottom of the analysis panel — follow-ups answer
+conversationally over the same logs.
 
 ---
 
@@ -70,13 +110,16 @@ Prefer the Anthropic API? Open **⚙ Settings** and paste an `ANTHROPIC_API_KEY`
 
 ## Troubleshooting
 
-- **"No Salesforce session found in Chrome"** — log into an org in Chrome, then
-  hit **↻ Refresh**. Visit `http://localhost:8787/api/diag` for non-secret
-  diagnostics (profiles, cookie counts, decrypt status).
-- **Port 8787 busy** — the server automatically tries 8788, 8789, … Watch the
-  terminal for the actual URL.
-- **Analysis says `claude` not found** — install the Claude Code CLI, or add an
-  API key in Settings.
+- **"No Salesforce session found in Chrome"** — log into an org in **Google
+  Chrome** (the tool reads stable Google Chrome only, not Edge/Brave/Arc/Safari),
+  then hit **↻ Refresh**. Visit `http://localhost:<port>/api/diag` (port shown in
+  the browser address bar) for non-secret diagnostics (profiles, cookie counts,
+  decrypt status).
+- **Nothing seems to happen after launch** — the server picks a free port
+  automatically; check the log at
+  `~/Library/Application Support/Apex Log Analyzer/launch.log`.
+- **Analysis says `claude` not found** — install the Claude Code CLI, or set an
+  `ANTHROPIC_API_KEY`.
 
 ## Privacy — everything is local
 
@@ -91,5 +134,12 @@ What actually uses the network:
   goes to Claude through **your own** `claude` CLI / Anthropic account, exactly
   as if you pasted it into Claude yourself. Nothing is sent automatically.
 
-Your Salesforce session and any saved API key stay in
-`~/.apex-log-analyzer.json` (mode `600`) on your machine.
+Your **Salesforce session is never written to disk** — it's read live from
+Chrome's cookie store and held only in memory for the running process. The only
+file the app writes is `~/.apex-log-analyzer.json` (mode `600`), which holds just
+your model choice and an optional Anthropic API key (if you set one instead of
+using the `claude` CLI).
+
+The local server accepts requests **only from your own machine**: it binds to
+loopback and rejects any request whose `Host`/`Origin` isn't localhost, so a
+website you happen to visit can't reach your logs through it.

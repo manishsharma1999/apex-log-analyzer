@@ -1,0 +1,74 @@
+#!/bin/bash
+# Executable for "Apex Log Analyzer.app". Launched from Finder with NO Terminal
+# window: it finds (or one-time downloads) a compatible Node, then runs the
+# bundled server, which opens your browser. Progress/errors show as native
+# macOS notifications/dialogs.
+set -euo pipefail
+
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"      # .../Contents/MacOS
+APPDIR="$(cd "$HERE/../Resources/app" && pwd)"            # bundled server + web/
+
+# Never write inside the app bundle (may be read-only / breaks signature).
+SUPPORT="$HOME/Library/Application Support/Apex Log Analyzer"
+RUNTIME="$SUPPORT/node"
+LOG="$SUPPORT/launch.log"
+mkdir -p "$SUPPORT"
+
+MIN_MAJOR=22   # node:sqlite is usable unflagged on 22.13+ / 24+
+MIN_MINOR=13
+
+# GUI-launched apps get a minimal PATH; add the usual Node + Claude CLI locations
+# (server.js also probes these, but a good PATH lets `node`/`claude` be found).
+export PATH="/usr/local/bin:/opt/homebrew/bin:$HOME/.local/bin:$HOME/.claude/local:$HOME/.npm-global/bin:$HOME/bin:/usr/bin:/bin:$PATH"
+
+note() { /usr/bin/osascript -e "display notification \"$1\" with title \"Apex Log Analyzer\"" >/dev/null 2>&1 || true; }
+fail() { /usr/bin/osascript -e "display dialog \"$1\" with title \"Apex Log Analyzer\" buttons {\"OK\"} default button 1 with icon caution" >/dev/null 2>&1 || true; exit 1; }
+
+node_ok() {
+  local n="$1"
+  command -v "$n" >/dev/null 2>&1 || [ -x "$n" ] || return 1
+  local v; v="$("$n" -v 2>/dev/null | sed 's/^v//')" || return 1
+  local maj="${v%%.*}"; local rest="${v#*.}"; local min="${rest%%.*}"
+  [ "${maj:-0}" -gt "$MIN_MAJOR" ] && return 0
+  [ "${maj:-0}" -eq "$MIN_MAJOR" ] && [ "${min:-0}" -ge "$MIN_MINOR" ] && return 0
+  return 1
+}
+
+NODE=""
+if node_ok node; then
+  NODE="$(command -v node)"
+elif node_ok "$RUNTIME/bin/node"; then
+  NODE="$RUNTIME/bin/node"
+else
+  note "First run: setting up (~30 MB, one-time)…"
+  case "$(uname -m)" in
+    arm64)  NARCH="arm64" ;;
+    x86_64) NARCH="x64" ;;
+    *)      NARCH="x64" ;;
+  esac
+  BASE="https://nodejs.org/dist/latest-v24.x"
+  FILE="$(curl -fsSL "$BASE/" 2>>"$LOG" | grep -oE "node-v24[0-9.]+-darwin-$NARCH\.tar\.gz" | head -1)" || true
+  [ -z "$FILE" ] && fail "Could not reach the Node download. Install Node 24 from nodejs.org, then reopen."
+  # Verify the download against Node's published SHA-256 before executing it, so a
+  # tampered/MITM'd tarball can't run as code on this machine.
+  EXPECTED="$(curl -fsSL "$BASE/SHASUMS256.txt" 2>>"$LOG" | awk -v f="$FILE" '$2==f {print $1}' | head -1)" || true
+  [ -z "$EXPECTED" ] && fail "Could not fetch Node's checksum list — aborting for safety."
+  TARBALL="$SUPPORT/$FILE"
+  curl -fL "$BASE/$FILE" -o "$TARBALL" 2>>"$LOG" || fail "Node download failed. Details: $LOG"
+  ACTUAL="$(/usr/bin/shasum -a 256 "$TARBALL" 2>>"$LOG" | awk '{print $1}')"
+  if [ "$ACTUAL" != "$EXPECTED" ]; then
+    rm -f "$TARBALL"
+    fail "Node download failed its integrity check — aborting. (expected $EXPECTED, got $ACTUAL)"
+  fi
+  rm -rf "$RUNTIME"; mkdir -p "$RUNTIME"
+  if ! tar -xzf "$TARBALL" -C "$RUNTIME" --strip-components=1 2>>"$LOG"; then
+    rm -f "$TARBALL"; fail "One-time setup failed. Details: $LOG"
+  fi
+  rm -f "$TARBALL"
+  NODE="$RUNTIME/bin/node"
+  note "Setup complete — starting."
+fi
+
+# Runs in the foreground of this app process, so quitting the app stops the
+# server. server.js opens the browser itself. All output goes to the log.
+exec "$NODE" "$APPDIR/server.js" >>"$LOG" 2>&1

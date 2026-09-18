@@ -41,6 +41,22 @@ function saveSettings(s) { fs.writeFileSync(SETTINGS_PATH, JSON.stringify(s, nul
 function getApiKey() { return process.env.ANTHROPIC_API_KEY || loadSettings().apiKey || ""; }
 function getModel() { return loadSettings().model || "claude-sonnet-5"; }
 
+// Pending shutdown timer, armed by /api/bye and cancelled by /api/heartbeat.
+let pendingQuit = null;
+
+// Opt-in outbound-request tracer (ALA_TRACE=1). Prints METHOD + host + path for
+// every network call the app makes, so you can watch that Salesforce traffic is
+// GET-only (read-only). No effect on behavior; off by default.
+function traceHttp(method, url) {
+  if (!process.env.ALA_TRACE) return;
+  try {
+    const u = new URL(url);
+    console.log(`  [http] ${String(method || "GET").toUpperCase().padEnd(6)} ${u.host}${u.pathname}${u.search ? "?…" : ""}`);
+  } catch {
+    console.log(`  [http] ${String(method || "GET").toUpperCase()} ${url}`);
+  }
+}
+
 // --- sessions from Chrome -------------------------------------------------
 let orgCache = { at: 0, orgs: [] };
 function getOrgs() {
@@ -79,6 +95,7 @@ async function getSession(apiHost) {
 
 async function rawFetch(session, urlPath, opts = {}) {
   const url = urlPath.startsWith("http") ? urlPath : session.instanceUrl + urlPath;
+  traceHttp(opts.method, url);
   const res = await fetch(url, {
     ...opts,
     headers: {
@@ -103,9 +120,34 @@ async function rawFetch(session, urlPath, opts = {}) {
 }
 
 // --- Salesforce operations ------------------------------------------------
-function listOrgsForUi() {
+// Only show orgs whose session actually works right now: a valid sid returns
+// 200 from /services/oauth2/userinfo; an expired/invalid one returns 401/403.
+// Cached ~60s per host so we don't re-check on every poll.
+const sessionOkCache = new Map(); // apiHost -> { at, ok }
+async function sessionActive(org) {
+  const now = Date.now();
+  const cached = sessionOkCache.get(org.apiHost);
+  if (cached && now - cached.at < 60000) return cached.ok;
+  let ok = false;
+  try {
+    // Hit the same REST API the app actually uses. redirect:"manual" so an
+    // expired session (which 302s to the login page) isn't mistaken for a live
+    // 200. 200 = valid; 403 = valid session but no perm; 401/302 = expired.
+    traceHttp("GET", `https://${org.apiHost}/services/data/v59.0/limits`);
+    const res = await fetch(`https://${org.apiHost}/services/data/v59.0/limits`, {
+      headers: { Authorization: `Bearer ${org.sessionId}`, Accept: "application/json" },
+      redirect: "manual",
+      signal: AbortSignal.timeout(5000),
+    });
+    ok = res.status === 200 || res.status === 403;
+  } catch { ok = false; }
+  sessionOkCache.set(org.apiHost, { at: now, ok });
+  return ok;
+}
+async function listOrgsForUi() {
   const orgs = getOrgs();
-  return orgs.map((o) => ({ value: o.apiHost, label: o.label, profile: o.profile }));
+  const checked = await Promise.all(orgs.map(async (o) => ({ o, ok: await sessionActive(o) })));
+  return checked.filter((c) => c.ok).map((c) => ({ value: c.o.apiHost, label: c.o.label }));
 }
 
 async function listLogs(apiHost) {
@@ -119,6 +161,9 @@ async function listLogs(apiHost) {
 
 const bodyCache = new Map(); // apiHost:id -> text (log bodies are immutable)
 async function getLogBody(apiHost, id) {
+  // id goes straight into the Salesforce REST path — pin it to a real 15/18-char
+  // Salesforce record id so a crafted value can't reshape the request path.
+  if (!/^[0-9A-Za-z]{15,18}$/.test(String(id || ""))) throw new Error("Invalid log id.");
   const cacheKey = `${apiHost}:${id}`;
   if (bodyCache.has(cacheKey)) return bodyCache.get(cacheKey);
   const s = await getSession(apiHost);
@@ -164,54 +209,156 @@ async function searchLogs(apiHost, q) {
   return found.filter(Boolean);
 }
 
-// True if a currently-active USER_DEBUG trace flag exists for the current user.
-async function hasActiveTraceFlag(apiHost) {
-  const s = await getSession(apiHost);
-  const info = await (await rawFetch(s, "/services/oauth2/userinfo")).json();
-  const now = new Date().toISOString();
-  const q = `SELECT Id FROM TraceFlag WHERE TracedEntityId = '${info.user_id}' AND LogType = 'USER_DEBUG' AND ExpirationDate > ${now}`;
-  const res = await rawFetch(s, `/services/data/v${s.apiVersion}/tooling/query/?q=${encodeURIComponent(q)}`);
-  return ((await res.json()).records || []).length > 0;
+// --- read-only helpers (chat enrichment + feature endpoints) --------------
+// Every call below is a GET/SELECT — nothing here writes to the org.
+
+// Defense-in-depth: escape a value going into a SOQL string literal. These come
+// from parsed logs / user questions, so treat them as untrusted.
+function soqlLiteral(v) { return String(v || "").replace(/[\\']/g, "\\$&"); }
+
+async function toolingQuery(session, soql) {
+  const res = await rawFetch(session, `/services/data/v${session.apiVersion}/tooling/query/?q=${encodeURIComponent(soql)}`);
+  return (await res.json()).records || [];
+}
+async function restQuery(session, soql) {
+  const res = await rawFetch(session, `/services/data/v${session.apiVersion}/query/?q=${encodeURIComponent(soql)}`);
+  return (await res.json()).records || [];
 }
 
-async function enableLogging(apiHost, hours = 12) {
+// The SOQL queries a log actually ran (from its SOQL_EXECUTE_BEGIN lines).
+function extractSoql(logText) {
+  const seen = new Set(); const out = [];
+  for (const line of String(logText).split("\n")) {
+    if (!line.includes("|SOQL_EXECUTE_BEGIN|")) continue;
+    // ts|SOQL_EXECUTE_BEGIN|[line]|Aggregations:n|SELECT ...  — query is field 5+
+    const q = line.split("|").slice(4).join("|").trim();
+    if (/^SELECT\b/i.test(q) && !seen.has(q)) { seen.add(q); out.push(q); }
+    if (out.length >= 8) break;
+  }
+  return out;
+}
+
+// The user a log ran as (from its USER_INFO line).
+function extractRunningUser(logText) {
+  for (const line of String(logText).split("\n")) {
+    if (!line.includes("|USER_INFO|")) continue;
+    const parts = line.split("|");
+    const idx = parts.findIndex((p) => /^005[0-9A-Za-z]{12,15}$/.test(p));
+    if (idx >= 0) return { id: parts[idx], username: parts[idx + 1] || "" };
+  }
+  return null;
+}
+
+// Apex classes/triggers that executed (from CODE_UNIT / METHOD / CONSTRUCTOR lines).
+function extractApexUnits(logText) {
+  const names = new Set();
+  for (const line of String(logText).split("\n")) {
+    if (!/\|(CODE_UNIT_STARTED|METHOD_ENTRY|CONSTRUCTOR_ENTRY)\|/.test(line)) continue;
+    // Trigger label can sit in a middle field (last field is the __sfdc_trigger entry point),
+    // so scan the whole line rather than only the last pipe-field.
+    const m = line.match(/\b([A-Za-z_][A-Za-z0-9_]*)\s+on\s+\w+\s+trigger event/); // "MyTrigger on Account trigger event ..."
+    if (m) names.add(m[1]);
+    const re = /(?:^|\|)([A-Za-z_][A-Za-z0-9_]*)\.[A-Za-z_]/g;                     // Class.method / Class.Class(
+    let mm;
+    while ((mm = re.exec(line)) !== null) names.add(mm[1]);
+  }
+  return [...names].filter((n) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(n) && n.length > 1).slice(0, 15);
+}
+
+// SOQL Query Plan (read-only ?explain=).
+async function getQueryPlan(apiHost, soql) {
   const s = await getSession(apiHost);
-  const v = s.apiVersion;
-  const info = await (await rawFetch(s, "/services/oauth2/userinfo")).json();
-  const userId = info.user_id;
+  const res = await rawFetch(s, `/services/data/v${s.apiVersion}/query/?explain=${encodeURIComponent(soql)}`);
+  return (await res.json()).plans || [];
+}
 
-  const dlName = "ApexLogAnalyzer";
-  const dlq = await (await rawFetch(s,
-    `/services/data/v${v}/tooling/query/?q=${encodeURIComponent(`SELECT Id FROM DebugLevel WHERE DeveloperName = '${dlName}' LIMIT 1`)}`)).json();
-  let debugLevelId = dlq.records && dlq.records[0] && dlq.records[0].Id;
-  if (!debugLevelId) {
-    const created = await (await rawFetch(s, `/services/data/v${v}/tooling/sobjects/DebugLevel`, {
-      method: "POST",
-      body: JSON.stringify({
-        DeveloperName: dlName, MasterLabel: dlName,
-        ApexCode: "FINE", ApexProfiling: "INFO", Callout: "INFO", Database: "INFO",
-        System: "DEBUG", Validation: "INFO", Visualforce: "INFO", Workflow: "INFO", Nba: "NONE", Wave: "NONE",
-      }),
-    })).json();
-    debugLevelId = created.id;
+// Resolve a user by Id, Name, or Username.
+async function resolveUser(apiHost, term) {
+  const s = await getSession(apiHost);
+  const t = String(term || "").trim();
+  let where;
+  if (/^005[0-9A-Za-z]{12,15}$/.test(t)) where = `Id='${t}'`;
+  else { const lit = soqlLiteral(t); where = `Name='${lit}' OR Username='${lit}' OR Username LIKE '${lit}%'`; }
+  return restQuery(s, `SELECT Id, Name, Username, IsActive, UserType, Profile.Name FROM User WHERE ${where} LIMIT 5`);
+}
+
+// A user's permission picture: profile, permission sets, notable system perms,
+// and (if a specific object is named) that object's CRUD across their perm sets.
+async function getUserPermissions(apiHost, userId, sobject) {
+  const s = await getSession(apiHost);
+  const psa = await restQuery(s,
+    `SELECT PermissionSet.Label, PermissionSet.Name, PermissionSet.IsOwnedByProfile, PermissionSet.Profile.Name, ` +
+    `PermissionSet.PermissionsModifyAllData, PermissionSet.PermissionsViewAllData, PermissionSet.PermissionsApiEnabled, ` +
+    `PermissionSet.PermissionsViewSetup, PermissionSet.PermissionsAuthorApex ` +
+    `FROM PermissionSetAssignment WHERE AssigneeId='${soqlLiteral(userId)}'`);
+  const result = { profile: null, permissionSets: [], systemPerms: {}, objectAccess: null };
+  const flags = ["ModifyAllData", "ViewAllData", "ApiEnabled", "ViewSetup", "AuthorApex"];
+  for (const a of psa) {
+    const ps = a.PermissionSet || {};
+    if (ps.IsOwnedByProfile) result.profile = (ps.Profile && ps.Profile.Name) || result.profile;
+    else if (ps.Label || ps.Name) result.permissionSets.push(ps.Label || ps.Name);
+    for (const f of flags) if (ps["Permissions" + f]) result.systemPerms[f] = true;
   }
-
-  const existing = await (await rawFetch(s,
-    `/services/data/v${v}/tooling/query/?q=${encodeURIComponent(`SELECT Id FROM TraceFlag WHERE TracedEntityId = '${userId}' AND LogType = 'USER_DEBUG'`)}`)).json();
-  for (const rec of existing.records || []) {
-    await rawFetch(s, `/services/data/v${v}/tooling/sobjects/TraceFlag/${rec.Id}`, { method: "DELETE" }).catch(() => {});
+  if (sobject && /^[A-Za-z][A-Za-z0-9_]*$/.test(sobject)) {
+    try {
+      result.objectAccess = {
+        sobject,
+        grants: await restQuery(s,
+          `SELECT Parent.Label, PermissionsRead, PermissionsCreate, PermissionsEdit, PermissionsDelete, ` +
+          `PermissionsViewAllRecords, PermissionsModifyAllRecords FROM ObjectPermissions ` +
+          `WHERE SobjectType='${soqlLiteral(sobject)}' AND ParentId IN ` +
+          `(SELECT PermissionSetId FROM PermissionSetAssignment WHERE AssigneeId='${soqlLiteral(userId)}')`),
+      };
+    } catch (e) { result.objectAccess = { sobject, error: e.message }; }
   }
+  return result;
+}
 
-  const now = new Date();
-  const expiration = new Date(now.getTime() + hours * 3600 * 1000);
-  await rawFetch(s, `/services/data/v${v}/tooling/sobjects/TraceFlag`, {
-    method: "POST",
-    body: JSON.stringify({
-      TracedEntityId: userId, DebugLevelId: debugLevelId, LogType: "USER_DEBUG",
-      StartDate: now.toISOString(), ExpirationDate: expiration.toISOString(),
-    }),
-  });
-  return { expiration: expiration.toISOString() };
+// Heuristic: an sobject name mentioned in a question ("Account", "My_Obj__c").
+function detectSobject(q) {
+  const cm = String(q).match(/\b([A-Za-z][A-Za-z0-9_]*__c)\b/i);
+  if (cm) return cm[1];
+  const known = ["Account", "Contact", "Opportunity", "Lead", "Case", "User", "Order", "Product2", "Quote", "Contract", "Campaign", "Task", "Event", "Asset"];
+  for (const k of known) if (new RegExp(`\\b${k}\\b`).test(q)) return k;
+  return null;
+}
+
+// Auto-fetch (read-only) the org data a chat question needs — SOQL query plans
+// and/or a user's permissions — and format it as extra context. Lets the
+// zero-key CLI path answer "what's the query plan…" / "why can't user X…"
+// using real org data without any live tool-calling.
+async function enrichForChat(apiHost, question, logText) {
+  if (!apiHost || !question) return "";
+  const q = String(question).toLowerCase();
+  const blocks = [];
+  if (/query plan|selectiv|\bindex(es)?\b|\bexplain\b|cardinalit|full( table)? scan|table scan|slow quer/.test(q)) {
+    const queries = extractSoql(logText);
+    const plans = [];
+    for (const soql of queries.slice(0, 6)) {
+      try { plans.push({ soql, plans: await getQueryPlan(apiHost, soql) }); }
+      catch (e) { plans.push({ soql, error: e.message }); }
+    }
+    if (plans.length) blocks.push("SOQL Query Plan results (read-only, Salesforce Query Plan API):\n" + JSON.stringify(plans, null, 2));
+    else if (/query plan/.test(q)) blocks.push("No SOQL_EXECUTE_BEGIN queries were found in the log(s) to run a query plan on.");
+  }
+  if (/permission|access|profile|perm ?set|\bfls\b|field[ -]level|sharing|who ran|running user|which user|what user|user (context|ran|who)|\bran (this|the)\b|can'?t |cannot |couldn'?t |unable to|\bcrud\b|modify all|view all/.test(q)) {
+    let target = null;
+    const m = question.match(/([A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}|005[0-9A-Za-z]{12,15})/);
+    if (m) target = m[1];
+    if (!target) { const ru = extractRunningUser(logText); if (ru) target = ru.id; }
+    if (target) {
+      try {
+        const users = await resolveUser(apiHost, target);
+        if (users.length) {
+          const u = users[0];
+          const perms = await getUserPermissions(apiHost, u.Id, detectSobject(question));
+          blocks.push(`Permission/access data (read-only) for ${u.Name} <${u.Username}> — profile "${(u.Profile && u.Profile.Name) || "?"}", active=${u.IsActive}:\n` + JSON.stringify(perms, null, 2));
+        } else blocks.push(`No Salesforce user matched "${target}".`);
+      } catch (e) { blocks.push(`Could not fetch permissions: ${e.message}`); }
+    }
+  }
+  if (!blocks.length) return "";
+  return "\n\nLive read-only data fetched from the org to answer this (authoritative — prefer it over guessing):\n\n" + blocks.join("\n\n");
 }
 
 // --- Claude ---------------------------------------------------------------
@@ -237,21 +384,68 @@ If multiple logs are provided (separated by "===== LOG … =====" markers), anal
 
 Be precise, reference concrete values from the log, and use Markdown.`;
 
+// Follow-up / chat mode: answer the user's question directly instead of
+// emitting the fixed report template above.
+const CLAUDE_CHAT_SYSTEM = `You are an expert Salesforce developer helping someone understand Apex debug logs.
+Answer the user's question directly and conversationally, in plain prose.
+Do NOT produce a fixed report with headed sections (Summary / Errors / Governor Limits / etc.) — just answer what was asked.
+Be concise and specific: reference concrete values, line numbers, method names, and limits straight from the log(s). Use Markdown for emphasis/code where helpful.
+When multiple logs are provided (separated by "===== LOG … =====" markers), consider all of them and say which log something came from when it matters.`;
+
+// Compare two groups of logs (each group may be several logs forming one operation).
+const CLAUDE_COMPARE_SYSTEM = `You are an expert Salesforce developer comparing two sets of Apex debug logs.
+Each set may contain MULTIPLE logs that together form ONE continuous operation (e.g. a save that cascades into several transactions), so read all logs in a group as a whole.
+GROUP A is the baseline; GROUP B is the comparison (e.g. before vs after a change, or a passing vs failing run).
+Produce a focused DIFF in Markdown with these sections (omit any that don't apply):
+
+## Verdict
+One or two sentences: what materially changed between A and B.
+
+## What Changed
+Concrete differences: SOQL/DML counts and which queries appeared/disappeared, methods added/removed, CPU/heap/limit deltas, new or resolved exceptions. Prefer an A-vs-B table.
+
+## Regressions / Improvements
+Anything that got worse (more queries, slower, new errors) or better.
+
+## Likely Cause & Recommendations
+The most likely reason for the differences and specific next steps.
+
+Reference concrete values from the logs. Do not invent data that isn't in them.`;
+
+// Static code review of the Apex that ran in a log.
+const CLAUDE_CODEHEALTH_SYSTEM = `You are a senior Salesforce engineer doing a focused code review of Apex that executed in a debug log.
+You are given the source of the Apex classes/triggers involved. Report only real, high-impact issues:
+- SOQL or DML inside loops / missing bulkification
+- Missing CRUD/FLS checks (isAccessible/isUpdateable, stripInaccessible, "with sharing")
+- Hardcoded IDs or org-specific values
+- Unbounded queries, missing LIMIT, non-selective filters
+- Empty catch blocks / swallowed exceptions, poor error handling
+- Recursion / trigger re-entrancy risks
+
+Use Markdown. For each finding give: severity (High/Medium/Low), the class + approximate location, the problem, and a concrete fix. Rank most severe first. If the code looks healthy, say so briefly. Do not invent code that isn't shown.`;
+
+// Order-of-execution / "what fires on save" for an object.
+const CLAUDE_ONSAVE_SYSTEM = `You are a Salesforce expert explaining what automation fires when a record of a given object is saved.
+You are given the object's active triggers (with before/after events), record-triggered flows (with trigger type + order), validation rules, and workflow rules — all read from the org.
+Lay out the Salesforce Order of Execution for a save on this object, in order, showing which of THIS object's automations run at each step (before-save flows, before triggers, validation rules, duplicate rules, after triggers, assignment/auto-response/workflow, after-save flows, roll-up summaries, etc.).
+Then flag risks: multiple automations writing the same field, ambiguous flow ordering, before vs after conflicts, recursion risk. Use Markdown. Only reference automations present in the provided data.`;
+
 const MAX_LOG_CHARS = 160000;
-function truncateLog(body) {
-  if (body.length <= MAX_LOG_CHARS) return { text: body, truncated: false };
-  const head = Math.floor(MAX_LOG_CHARS * 0.55);
-  const tail = MAX_LOG_CHARS - head;
+function truncateLog(body, limit = MAX_LOG_CHARS) {
+  if (body.length <= limit) return { text: body, truncated: false };
+  const head = Math.floor(limit * 0.55);
+  const tail = limit - head;
   return {
-    text: body.slice(0, head) + `\n\n... [${body.length - MAX_LOG_CHARS} characters trimmed] ...\n\n` + body.slice(body.length - tail),
+    text: body.slice(0, head) + `\n\n... [${body.length - limit} characters trimmed] ...\n\n` + body.slice(body.length - tail),
     truncated: true,
   };
 }
-async function analyzeViaApi(apiKey, userContent) {
+async function analyzeViaApi(apiKey, system, userContent) {
+  traceHttp("POST", "https://api.anthropic.com/v1/messages");
   const res = await fetch("https://api.anthropic.com/v1/messages", {
     method: "POST",
     headers: { "content-type": "application/json", "x-api-key": apiKey, "anthropic-version": "2023-06-01" },
-    body: JSON.stringify({ model: getModel(), max_tokens: 3000, system: CLAUDE_SYSTEM, messages: [{ role: "user", content: userContent }] }),
+    body: JSON.stringify({ model: getModel(), max_tokens: 3000, system, messages: [{ role: "user", content: userContent }] }),
   });
   if (!res.ok) {
     let msg = `${res.status} ${res.statusText}`;
@@ -269,19 +463,43 @@ function cliModelArg() {
   return "sonnet";
 }
 
+// Locate the Claude Code CLI. A GUI-launched .app gets a minimal PATH (no
+// ~/.local/bin, Homebrew, etc.), so `claude` isn't found there even though it
+// works from a Terminal. Check the usual install locations, then fall back to
+// PATH resolution.
+let cachedClaude = null;
+function resolveClaude() {
+  if (cachedClaude) return cachedClaude;
+  const home = os.homedir();
+  const candidates = [
+    process.env.CLAUDE_CLI,
+    path.join(home, ".claude", "local", "claude"),
+    path.join(home, ".local", "bin", "claude"),
+    "/opt/homebrew/bin/claude",
+    "/usr/local/bin/claude",
+    path.join(home, ".npm-global", "bin", "claude"),
+    path.join(home, "bin", "claude"),
+  ].filter(Boolean);
+  for (const c of candidates) {
+    try { if (fs.existsSync(c)) { cachedClaude = c; return c; } } catch { /* ignore */ }
+  }
+  cachedClaude = "claude"; // let execFile try PATH (works when launched from a shell)
+  return cachedClaude;
+}
+
 // Zero-key path: use the locally installed Claude Code CLI (`claude -p`), which
 // runs under the user's existing login. The instruction is the -p arg; the
 // (large) log is piped via stdin — the documented `cat file | claude -p` form.
 function analyzeViaCli(instruction, stdinText) {
   return new Promise((resolve, reject) => {
     const child = execFile(
-      "claude",
+      resolveClaude(),
       ["-p", instruction, "--model", cliModelArg()],
       { maxBuffer: 32 * 1024 * 1024, timeout: 240000 },
       (err, stdout, stderr) => {
         if (err) {
           if (err.code === "ENOENT") {
-            return reject(new Error("Claude Code CLI ('claude') not found on PATH. Install it, or set an ANTHROPIC_API_KEY in Settings."));
+            return reject(new Error("Claude Code CLI ('claude') not found. Install it (claude.ai/code), or set an ANTHROPIC_API_KEY env var / ~/.apex-log-analyzer.json."));
           }
           return reject(new Error(String(stderr || err.message || "claude CLI failed").slice(0, 400)));
         }
@@ -292,19 +510,54 @@ function analyzeViaCli(instruction, stdinText) {
   });
 }
 
-async function analyze({ apiHost, id, question, logText }) {
+// Render prior turns of a follow-up conversation as plain text.
+function renderHistory(history) {
+  if (!Array.isArray(history) || !history.length) return "";
+  let s = "\n\nConversation so far:\n";
+  for (const h of history) {
+    const who = h && h.role === "assistant" ? "Assistant" : "User";
+    const t = String((h && h.text) || "").slice(0, 8000);
+    if (t) s += `\n${who}: ${t}\n`;
+  }
+  return s;
+}
+
+async function analyze({ apiHost, id, question, logText, freeform, history }) {
   // logText is supplied directly by the client for uploaded files and for
   // multi-log ("analyze selected") requests; otherwise fetch the one log by id.
   const body = (logText != null && logText !== "") ? String(logText) : await getLogBody(apiHost, id);
   const { text, truncated } = truncateLog(body);
-  const truncNote = truncated ? "\nNote: this log was trimmed (head + tail kept) because it is large." : "";
+  const truncNote = truncated ? "\nNote: the log(s) were trimmed (head + tail kept) because they are large." : "";
   const apiKey = getApiKey();
+
+  if (freeform) {
+    // Follow-up question: answer directly, with the logs + prior turns as context.
+    // Auto-fetch (read-only) any query-plan / permission data the question needs.
+    const priorTurns = renderHistory(history);
+    const enrichment = await enrichForChat(apiHost, question, text);
+    if (apiKey) {
+      const userContent =
+        "Here are the Apex debug log(s):\n\n```\n" + text + "\n```\n" +
+        (truncated ? "\n(Trimmed because large.)\n" : "") +
+        priorTurns + enrichment +
+        `\n\nMy question: ${question || "Explain these logs."}`;
+      return analyzeViaApi(apiKey, CLAUDE_CHAT_SYSTEM, userContent);
+    }
+    const instruction =
+      CLAUDE_CHAT_SYSTEM +
+      priorTurns + enrichment +
+      truncNote +
+      `\n\nMy question: ${question || "Explain these logs."}` +
+      "\n\nThe raw Apex debug log(s) are on standard input. Do not use any tools; just answer using the log text and the data above.";
+    return analyzeViaCli(instruction, text);
+  }
+
   if (apiKey) {
     const userContent =
       (question ? `The user is specifically asking: "${question}"\n\n` : "") +
       (truncated ? "Note: this log was trimmed (head + tail kept) because it is large.\n\n" : "") +
       "Here is the Apex debug log:\n\n```\n" + text + "\n```";
-    return analyzeViaApi(apiKey, userContent);
+    return analyzeViaApi(apiKey, CLAUDE_SYSTEM, userContent);
   }
   // No key configured -> use the local Claude Code CLI (no manual step).
   const instruction =
@@ -313,6 +566,85 @@ async function analyze({ apiHost, id, question, logText }) {
     truncNote +
     "\n\nThe raw Apex debug log to analyze is provided on standard input. Do not use any tools; just analyze the log text.";
   return analyzeViaCli(instruction, text);
+}
+
+// Run a system prompt over a block of user content, via API key or the CLI.
+async function runClaude(system, userContent, cliTail) {
+  const apiKey = getApiKey();
+  if (apiKey) return analyzeViaApi(apiKey, system, userContent);
+  return analyzeViaCli(system + cliTail, userContent);
+}
+
+// #9 Compare — two groups of logs (each group may span several logs).
+async function compareLogs({ groupA, groupB }) {
+  const half = Math.floor(MAX_LOG_CHARS / 2);
+  const a = truncateLog(String(groupA || ""), half);
+  const b = truncateLog(String(groupB || ""), half);
+  const userContent =
+    "GROUP A (baseline):\n\n```\n" + a.text + "\n```\n\n" +
+    "GROUP B (comparison):\n\n```\n" + b.text + "\n```";
+  return runClaude(CLAUDE_COMPARE_SYSTEM, userContent,
+    "\n\nThe two log groups are on standard input (GROUP A then GROUP B). Do not use any tools; just compare them.");
+}
+
+// #11 Code Health — review the Apex source that ran in the given log(s).
+async function codeHealth({ apiHost, logText }) {
+  const names = extractApexUnits(logText);
+  if (!names.length) throw new Error("No Apex classes or triggers were found executing in this log.");
+  if (!apiHost) throw new Error("Select a Salesforce org so the Apex source can be fetched for review.");
+  const s = await getSession(apiHost);
+  const inList = names.map((n) => `'${n}'`).join(","); // names are validated identifiers
+  const sources = [];
+  for (const r of await toolingQuery(s, `SELECT Name, Body FROM ApexClass WHERE Name IN (${inList})`)) sources.push({ type: "class", name: r.Name, body: r.Body });
+  for (const r of await toolingQuery(s, `SELECT Name, Body FROM ApexTrigger WHERE Name IN (${inList})`)) sources.push({ type: "trigger", name: r.Name, body: r.Body });
+  if (!sources.length) throw new Error(`Could not fetch readable source for: ${names.join(", ")} (managed/namespaced code has no readable Body).`);
+  const perBudget = Math.max(2000, Math.floor(MAX_LOG_CHARS / sources.length));
+  const userContent = sources
+    .map((x) => `===== ${x.type.toUpperCase()}: ${x.name} =====\n` + truncateLog(String(x.body || ""), perBudget).text)
+    .join("\n\n");
+  const text = await runClaude(CLAUDE_CODEHEALTH_SYSTEM, userContent,
+    "\n\nThe Apex source is on standard input. Do not use any tools; just review it.");
+  return { names, reviewed: sources.map((x) => x.name), text };
+}
+
+// #12 On Save — list triggerable objects, and the automation that fires on save.
+async function listObjects(apiHost) {
+  const s = await getSession(apiHost);
+  const res = await rawFetch(s, `/services/data/v${s.apiVersion}/sobjects/`);
+  const all = (await res.json()).sobjects || [];
+  return all
+    .filter((o) => o.triggerable && o.queryable && !o.deprecatedAndHidden)
+    .map((o) => ({ name: o.name, label: o.label }))
+    .sort((x, y) => x.label.localeCompare(y.label));
+}
+async function onSave({ apiHost, sobject }) {
+  if (!apiHost) throw new Error("Select a Salesforce org first.");
+  if (!/^[A-Za-z][A-Za-z0-9_]*$/.test(String(sobject || ""))) throw new Error("Invalid object name.");
+  const s = await getSession(apiHost);
+  const lit = soqlLiteral(sobject);
+  const data = { sobject, triggers: [], validationRules: [], flows: [], workflowRules: [] };
+  // Each query is wrapped so one unsupported field/object doesn't sink the rest.
+  try {
+    data.triggers = await toolingQuery(s,
+      `SELECT Name, Status, UsageBeforeInsert, UsageAfterInsert, UsageBeforeUpdate, UsageAfterUpdate, ` +
+      `UsageBeforeDelete, UsageAfterDelete, UsageAfterUndelete FROM ApexTrigger WHERE TableEnumOrId='${lit}'`);
+  } catch (e) { data.triggersError = e.message; }
+  try {
+    data.validationRules = await toolingQuery(s,
+      `SELECT ValidationName, Active, ErrorMessage FROM ValidationRule WHERE EntityDefinition.QualifiedApiName='${lit}'`);
+  } catch (e) { data.validationRulesError = e.message; }
+  try {
+    data.flows = await restQuery(s,
+      `SELECT Label, ProcessType, TriggerType, TriggerOrder, RecordTriggerType FROM FlowDefinitionView ` +
+      `WHERE TriggerObjectOrEvent='${lit}' AND IsActive=true`);
+  } catch (e) { data.flowsError = e.message; }
+  try {
+    data.workflowRules = await toolingQuery(s, `SELECT Name, Active FROM WorkflowRule WHERE TableEnumOrId='${lit}'`);
+  } catch (e) { data.workflowRulesError = e.message; }
+  const userContent = `Object: ${sobject}\n\nAutomation data from the org (JSON):\n\n\`\`\`json\n${JSON.stringify(data, null, 2)}\n\`\`\``;
+  const text = await runClaude(CLAUDE_ONSAVE_SYSTEM, userContent,
+    "\n\nThe automation data (JSON) is on standard input. Do not use any tools.");
+  return { data, text };
 }
 
 // --- HTTP -----------------------------------------------------------------
@@ -332,13 +664,50 @@ function serveStatic(res, urlPath) {
   fs.createReadStream(full).pipe(res);
 }
 
+// The server binds to loopback, but a browser can still reach it from ANY page
+// the user visits. Two guards close that off:
+//  - Host must be a loopback literal — defeats DNS-rebinding (an attacker domain
+//    that rebinds to 127.0.0.1 still sends its own name in the Host header).
+//  - Origin (when present) must be loopback too — defeats cross-site fetch/CSRF
+//    from a normal malicious page (which sends its real Origin).
+// Same-origin navigations and the app's own relative fetches pass cleanly.
+function isLoopbackName(name) {
+  const n = String(name || "").toLowerCase().replace(/^\[|\]$/g, "");
+  return n === "localhost" || n === "127.0.0.1" || n === "::1";
+}
+function requestIsLocal(req) {
+  const host = (req.headers.host || "").toLowerCase().replace(/:\d+$/, "");
+  if (!isLoopbackName(host)) return false;
+  const origin = req.headers.origin;
+  if (origin) {
+    try { if (!isLoopbackName(new URL(origin).hostname)) return false; } catch { return false; }
+  }
+  return true;
+}
+
 const server = http.createServer(async (req, res) => {
   const u = new URL(req.url, `http://localhost:${PORT}`);
   const p = u.pathname;
+  if (!requestIsLocal(req)) {
+    res.writeHead(403, { "Content-Type": "text/plain" });
+    return res.end("Forbidden: this app only accepts requests from your own machine.");
+  }
   try {
     if (!p.startsWith("/api/")) return serveStatic(res, p);
     if (p === "/api/ping") return sendJson(res, 200, { app: "apex-log-analyzer" });
-    if (p === "/api/orgs") return sendJson(res, 200, { orgs: listOrgsForUi() });
+    // Browser lifecycle: the page beats every few seconds; on tab close it sends
+    // a "bye" beacon and we exit shortly after — but a heartbeat (e.g. from a
+    // page reload) within the grace window cancels the shutdown.
+    if (p === "/api/heartbeat") {
+      if (pendingQuit) { clearTimeout(pendingQuit); pendingQuit = null; }
+      return sendJson(res, 200, { ok: true });
+    }
+    if (p === "/api/bye") {
+      if (pendingQuit) clearTimeout(pendingQuit);
+      pendingQuit = setTimeout(() => { console.log("Browser closed — shutting down."); process.exit(0); }, 4000);
+      return sendJson(res, 200, { ok: true });
+    }
+    if (p === "/api/orgs") return sendJson(res, 200, { orgs: await listOrgsForUi() });
     if (p === "/api/diag") return sendJson(res, 200, diagnose());
     if (p === "/api/logs") return sendJson(res, 200, { records: await listLogs(u.searchParams.get("org")) });
     if (p === "/api/search") return sendJson(res, 200, { matches: await searchLogs(u.searchParams.get("org"), u.searchParams.get("q") || "") });
@@ -346,13 +715,22 @@ const server = http.createServer(async (req, res) => {
       const body = await getLogBody(u.searchParams.get("org"), u.searchParams.get("id"));
       res.writeHead(200, { "Content-Type": "text/plain" }); return res.end(body);
     }
-    if (p === "/api/trace-status") return sendJson(res, 200, { active: await hasActiveTraceFlag(u.searchParams.get("org")) });
-    if (p === "/api/enable-logging" && req.method === "POST") {
-      const { org } = await readBody(req); return sendJson(res, 200, await enableLogging(org));
-    }
     if (p === "/api/analyze" && req.method === "POST") {
-      const { org, id, question, logText } = await readBody(req);
-      return sendJson(res, 200, { text: await analyze({ apiHost: org, id, question, logText }) });
+      const { org, id, question, logText, freeform, history } = await readBody(req);
+      return sendJson(res, 200, { text: await analyze({ apiHost: org, id, question, logText, freeform, history }) });
+    }
+    if (p === "/api/compare" && req.method === "POST") {
+      const { groupA, groupB } = await readBody(req);
+      return sendJson(res, 200, { text: await compareLogs({ groupA, groupB }) });
+    }
+    if (p === "/api/codehealth" && req.method === "POST") {
+      const { org, logText } = await readBody(req);
+      return sendJson(res, 200, await codeHealth({ apiHost: org, logText }));
+    }
+    if (p === "/api/objects") return sendJson(res, 200, { objects: await listObjects(u.searchParams.get("org")) });
+    if (p === "/api/onsave" && req.method === "POST") {
+      const { org, sobject } = await readBody(req);
+      return sendJson(res, 200, await onSave({ apiHost: org, sobject }));
     }
     if (p === "/api/settings") {
       if (req.method === "POST") {

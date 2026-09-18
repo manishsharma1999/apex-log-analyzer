@@ -1,5 +1,6 @@
 node_modules/
 .runtime/
+dist/
 *.log
 .DS_Store
 # never commit user settings (may contain an API key)

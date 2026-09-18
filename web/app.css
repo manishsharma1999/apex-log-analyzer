@@ -33,7 +33,8 @@ body { display: flex; flex-direction: column; height: 100vh; }
   background: var(--bg-2);
   border-bottom: 1px solid var(--border);
 }
-.brand { font-weight: 600; font-size: 15px; white-space: nowrap; }
+.brand { font-weight: 600; font-size: 15px; white-space: nowrap; display: flex; align-items: center; gap: 9px; }
+.brand .app-logo { width: 26px; height: 26px; flex: 0 0 auto; border-radius: 6px; object-fit: cover; }
 .toolbar { display: flex; align-items: center; gap: 8px; flex: 1; }
 .spacer { flex: 1; }
 .model-pick { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 12px; white-space: nowrap; }
@@ -92,6 +93,12 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
 .count { color: var(--muted); font-size: 12px; white-space: nowrap; }
 th.chk, td.chk { width: 30px; text-align: center; padding-left: 8px; padding-right: 0; }
 td.chk input, th.chk input { cursor: pointer; width: 15px; height: 15px; vertical-align: middle; }
+th.dl, td.dl { width: 26px; text-align: center; padding-left: 0; padding-right: 0; }
+.icon-btn {
+  background: none; border: none; padding: 2px 4px; border-radius: 4px;
+  color: var(--muted); font-size: 13px; line-height: 1; cursor: pointer;
+}
+.icon-btn:hover { color: var(--accent); background: var(--bg-3); }
 .status-pill.up { background: #2a2140; color: var(--accent-2); }
 .snippet { color: var(--muted); font-size: 11px; font-family: ui-monospace, monospace; padding: 0 10px 7px; border-bottom: 1px solid var(--border); }
 .snippet mark { background: var(--mark); color: #000; }
@@ -119,6 +126,12 @@ thead th {
   letter-spacing: 0.03em;
 }
 tbody td { padding: 7px 10px; border-bottom: 1px solid var(--border); vertical-align: top; }
+/* Keep the list usable at any pane width: long operation paths wrap instead of
+   forcing the table wider than the pane (which clipped columns at the divider). */
+td.op { word-break: break-word; overflow-wrap: anywhere; }
+td.usr { white-space: nowrap; }
+td.dur, td.size { white-space: nowrap; }
+thead th, tbody td { min-width: 0; }
 tbody tr { cursor: pointer; }
 tbody tr:hover { background: var(--bg-2); }
 tbody tr.selected { background: #1a2740; }
@@ -128,31 +141,81 @@ tbody tr.selected { background: #1a2740; }
 
 .empty { padding: 24px; color: var(--muted); text-align: center; }
 
-.viewer-header { border-bottom: 1px solid var(--border); }
-.viewer-search, .viewer-actions {
-  display: flex;
-  gap: 8px;
-  align-items: center;
-  padding: 8px;
-}
-.viewer-search input { flex: 1; }
-.viewer-actions input { flex: 1; }
-.viewer-actions { border-top: 1px solid var(--border); background: var(--bg-2); }
-
 .viewer-body { flex: 1; display: flex; min-height: 0; }
+.viewer-main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+.viewer-toolbar {
+  display: flex; align-items: center; gap: 6px;
+  padding: 6px 8px; background: var(--bg-2);
+  border-bottom: 1px solid var(--border);
+}
+.seg { padding: 4px 10px; font-size: 12px; }
+.seg.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+
+/* compare-mode picker bar */
+.comparebar { background: #241f3a; }
+.comparebar #compareStep { color: #c3b6ff; font-weight: 600; }
+
 .log-view {
   flex: 1;
   margin: 0;
-  padding: 12px 14px;
   overflow: auto;
-  white-space: pre-wrap;
-  word-break: break-word;
+  background: #0c0e13;
   font-family: "SF Mono", ui-monospace, Menlo, Consolas, monospace;
   font-size: 12px;
-  line-height: 1.5;
+  line-height: 1.6;
+  tab-size: 4;
 }
-.log-view mark { background: var(--mark); color: #000; }
+.log-view:focus { outline: none; }
+.log-view mark { background: var(--mark); color: #000; border-radius: 2px; }
 .log-view mark.active { background: #ff9f1a; box-shadow: 0 0 0 2px #ff9f1a; }
+
+/* Fast plain rendering for very large logs (no gutter / colours). */
+.log-view.plain {
+  padding: 12px 14px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--text);
+}
+
+/* VS Code-style code view with a non-selectable line-number gutter.
+   The numbers are CSS-generated content, so ⌘A / copy never picks them up. */
+.log-view.code { padding: 10px 0; color: #c9d1d9; }
+.code-lines { counter-reset: line; }
+.cline {
+  counter-increment: line;
+  position: relative;
+  padding: 0 14px 0 62px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.cline::before {
+  content: counter(line);
+  position: absolute;
+  left: 0;
+  width: 46px;
+  padding-right: 12px;
+  text-align: right;
+  color: #454b5a;               /* greyed out, but still visible */
+  user-select: none;
+  -webkit-user-select: none;
+  pointer-events: none;
+}
+.cline:hover { background: rgba(255,255,255,0.03); }
+.cline:hover::before { color: #8b93a7; }
+
+/* Apex debug-log syntax colours */
+.t-time    { color: #5c6370; }
+.t-punc    { color: #3a4150; }
+.t-event   { color: #4a9eff; }
+.t-debug   { color: #3fb950; font-weight: 600; }
+.t-soql    { color: #d29922; }
+.t-enter   { color: #b083f0; }
+.t-exit    { color: #7f8796; }
+.t-limit   { color: #56b6c2; }
+.t-err     { color: #ff6b61; font-weight: 600; }
+.t-lineref { color: #e5a663; }
+
+.thinking { color: var(--muted); font-style: italic; }
 
 .analysis {
   width: 42%;
@@ -170,7 +233,7 @@ tbody tr.selected { background: #1a2740; }
   border-bottom: 1px solid var(--border);
   font-weight: 600;
 }
-.analysis-content { overflow: auto; padding: 12px 16px; }
+.analysis-content { flex: 1; min-height: 0; overflow: auto; padding: 12px 16px; }
 .analysis-content h2 { font-size: 14px; margin: 16px 0 6px; color: var(--accent); }
 .analysis-content h2:first-child { margin-top: 0; }
 .analysis-content code {
@@ -185,7 +248,36 @@ tbody tr.selected { background: #1a2740; }
   border-radius: 6px;
   overflow: auto;
 }
-.analysis-content ul { margin: 4px 0; padding-left: 20px; }
+.analysis-content ul, .analysis-content ol { margin: 4px 0; padding-left: 22px; }
+.analysis-content li { margin: 3px 0; }
+.analysis-content .md-table {
+  border-collapse: collapse;
+  margin: 8px 0;
+  width: 100%;
+  font-size: 12px;
+}
+.analysis-content .md-table th,
+.analysis-content .md-table td {
+  border: 1px solid var(--border);
+  padding: 5px 9px;
+  text-align: left;
+  vertical-align: top;
+}
+.analysis-content .md-table th { background: var(--bg-3); color: var(--muted); font-weight: 600; }
+.analysis-content .md-table tr:nth-child(even) td { background: rgba(255,255,255,0.02); }
+.analysis-content .md-table code { white-space: nowrap; }
+
+/* follow-up chat */
+.chat-turn { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--border); }
+.chat-role { font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); margin-bottom: 4px; }
+.chat-turn.user .chat-role { color: var(--accent); }
+.chat-turn.assistant .chat-role { color: var(--accent-2); }
+.chat-bubble p:first-child { margin-top: 0; }
+.analysis-chat {
+  display: flex; gap: 8px; padding: 10px 12px;
+  border-top: 1px solid var(--border); background: var(--bg-3);
+}
+.analysis-chat input { flex: 1; }
 
 .spinner {
   display: inline-block;
@@ -217,3 +309,19 @@ tbody tr.selected { background: #1a2740; }
 .modal-card label input, .modal-card label select { width: 100%; margin-top: 4px; }
 .hint { color: var(--muted); font-size: 11px; line-height: 1.4; }
 .modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 12px; }
+
+/* performance profiler (⏱ Profile view) */
+.log-view.profile-view { white-space: normal; padding: 0; color: var(--text); }
+.profile { padding: 12px 14px; }
+.profile h3 { margin: 16px 0 6px; font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); }
+.profile h3:first-child { margin-top: 0; }
+.prof-table { width: 100%; border-collapse: collapse; font-family: ui-monospace, monospace; font-size: 12px; }
+.prof-table th, .prof-table td { text-align: left; padding: 4px 8px; border-bottom: 1px solid var(--border); }
+.prof-table th { color: var(--muted); font-weight: 600; }
+.prof-table td.num { text-align: right; white-space: nowrap; }
+.prof-name { max-width: 360px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bar { display: inline-block; height: 8px; min-width: 2px; background: var(--accent); border-radius: 3px; vertical-align: middle; margin-right: 6px; }
+.lim-ok .bar { background: var(--green); }
+.lim-warn .bar { background: var(--amber); }
+.lim-hot .bar { background: var(--red); }
+.lim-hot td:first-child { color: var(--red); }

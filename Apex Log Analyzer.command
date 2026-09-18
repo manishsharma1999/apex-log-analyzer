@@ -41,8 +41,23 @@ else
     echo "Could not find a Node download. Please install Node 24 from https://nodejs.org and try again."
     read -r -p "Press Return to close." _; exit 1
   fi
+  # Verify the tarball against Node's published SHA-256 before executing it.
+  EXPECTED="$(curl -fsSL "$BASE/SHASUMS256.txt" | awk -v f="$FILE" '$2==f {print $1}' | head -1)"
+  if [ -z "$EXPECTED" ]; then
+    echo "Could not fetch Node's checksum list — aborting for safety."
+    read -r -p "Press Return to close." _; exit 1
+  fi
+  TARBALL="$RUNTIME.tarball.tar.gz"
+  curl -fL "$BASE/$FILE" -o "$TARBALL"
+  ACTUAL="$(shasum -a 256 "$TARBALL" | awk '{print $1}')"
+  if [ "$ACTUAL" != "$EXPECTED" ]; then
+    rm -f "$TARBALL"
+    echo "Node download failed its integrity check — aborting. (expected $EXPECTED, got $ACTUAL)"
+    read -r -p "Press Return to close." _; exit 1
+  fi
   rm -rf "$RUNTIME"; mkdir -p "$RUNTIME"
-  curl -fL "$BASE/$FILE" | tar -xz -C "$RUNTIME" --strip-components=1
+  tar -xzf "$TARBALL" -C "$RUNTIME" --strip-components=1
+  rm -f "$TARBALL"
   NODE="$RUNTIME/bin/node"
   echo "Done."
 fi
