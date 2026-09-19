@@ -6,53 +6,66 @@
     <title>Apex Log Analyzer</title>
     <link rel="icon" type="image/png" href="logo.png" />
     <link rel="stylesheet" href="app.css" />
+    <script>
+      // Apply the saved color theme before first paint to avoid a flash.
+      (function () {
+        try {
+          var saved = localStorage.getItem("ala-theme");
+          var theme = saved || (window.matchMedia && window.matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark");
+          if (theme === "light") document.documentElement.setAttribute("data-theme", "light");
+        } catch (e) {}
+      })();
+    </script>
   </head>
   <body>
     <div class="use-banner" role="alert">
       <span class="ub-msg">⚠ Authorized use only — use this tool on a customer org <strong>only</strong> when the customer has granted you login access to it.</span>
       <span id="currentUser" class="current-user hidden" title="Salesforce user whose Chrome session this tool is using"></span>
-      <a class="credit" href="https://salesforce.enterprise.slack.com/team/U052FHMJLUD" target="_blank" rel="noopener noreferrer" title="Message Manish Sharma on Slack">Created by: Manish Sharma</a>
+      <a class="credit" href="https://salesforce.enterprise.slack.com/team/U052FHMJLUD" target="_blank" rel="noopener noreferrer" title="Message Manish Sharma on Slack">Created by: <span class="credit-name">Manish Sharma</span></a>
     </div>
     <header class="topbar">
-      <div class="brand">
+      <div class="brand" id="brand">
         <img class="app-logo" src="logo.png" alt="" />
         <span>Apex Log Analyzer</span>
       </div>
       <div class="toolbar">
-        <label class="org-pick" title="Choose the Salesforce org (from your Chrome session)">Org
+        <label class="org-pick" title="Choose the Salesforce org (from your Chrome session)">
+          <span class="pick-label">Org</span>
           <select id="orgSelect"></select>
         </label>
         <span class="spacer"></span>
-        <button id="onSaveBtn" title="See what automation fires when an object is saved (order of execution)">🔀 On Save</button>
-        <button id="sfBtn" class="sf-btn" title="Search Slack / OrgCS / GUS for prior art on the errors in the selected log(s)">☁ Salesforce</button>
-        <label class="model-pick" title="Claude model used for analysis">Model
+        <button id="onSaveBtn" class="hidden" title="See what automation fires when an object is saved (order of execution)">🔀 Order of Execution</button>
+        <button id="sfBtn" class="sf-btn hidden" title="Search Slack / OrgCS / GUS for prior art on the errors in the selected log(s)">☁ Salesforce</button>
+        <label class="model-pick hidden" id="modelPick" title="Claude model used for analysis">
+          <span class="pick-label">Model</span>
           <select id="modelSelect">
             <option value="claude-sonnet-5">Sonnet 5 (balanced)</option>
             <option value="claude-opus-5">Opus 5 (most capable)</option>
             <option value="claude-haiku-4-5-20251001">Haiku 4.5 (fastest)</option>
           </select>
         </label>
+        <button id="themeToggle" class="theme-toggle" type="button" title="Toggle light / dark theme" aria-label="Toggle light / dark theme">🌙</button>
       </div>
     </header>
 
     <div id="statusBar" class="status hidden"></div>
 
-    <main class="layout">
+    <main class="layout solo" id="layout">
       <section class="pane list-pane" id="listPane">
-        <div class="list-header search-row">
+        <div class="list-header search-row hidden" id="searchRow">
           <input id="search" type="search" placeholder="🔎 Search all logs — user, operation, status, or any text inside…" />
           <span id="matchInfo" class="count"></span>
           <span id="searchInfo" class="count"></span>
           <span id="logCount" class="count"></span>
         </div>
-        <div class="list-header controls">
-          <label class="fetch-label" title="Only fetch logs created in the last N minutes — keeps you from pulling the whole org">Last
+        <div class="list-header controls" id="controlsRow">
+          <label class="fetch-label hidden" id="fetchLabel" title="Only fetch logs created in the last N minutes — keeps you from pulling the whole org">Last
             <input id="windowMin" type="number" min="1" step="1" value="2" inputmode="numeric" title="Time window in minutes" /> min
           </label>
-          <button id="fetchBtn" class="primary" title="Fetch logs from the selected org for this time window">↻ Fetch logs</button>
-          <button id="fetchAllBtn" title="Fetch every log from the org, ignoring the time window">Fetch all</button>
-          <span class="ctl-sep"></span>
-          <button id="autoBtn" title="Auto-refresh the log list every few seconds (does not create trace flags — manage debug logging yourself in Setup)" class="on">● Auto-refresh: ON</button>
+          <button id="fetchBtn" class="primary hidden" title="Fetch logs from the selected org for this time window">↻ Fetch logs</button>
+          <button id="fetchAllBtn" class="hidden" title="Fetch every log from the org, ignoring the time window">Fetch all</button>
+          <span class="ctl-sep hidden" id="ctlSep"></span>
+          <button id="autoBtn" title="Auto-refresh the log list every few seconds (does not create trace flags — manage debug logging yourself in Setup)" class="on hidden">● Auto-refresh: ON</button>
           <span class="spacer"></span>
           <button id="uploadBtn" title="Upload one or more .log files">⬆ Upload .log</button>
           <input id="fileInput" type="file" accept=".log,.txt,text/plain" multiple hidden />
@@ -74,28 +87,40 @@
         </div>
         <div class="table-wrap">
           <table id="logTable">
-            <thead>
+            <thead id="logHead" class="hidden">
               <tr>
+                <th class="rownum">#</th>
                 <th class="chk"><input id="selectAll" type="checkbox" title="Select all shown" /></th>
-                <th class="dl"></th>
                 <th>Time</th>
                 <th>User</th>
                 <th>Operation</th>
                 <th>Status</th>
-                <th>Duration</th>
-                <th>Size</th>
+                <th>Duration (ms)</th>
+                <th>Log size (bytes)</th>
+                <th class="dl"></th>
               </tr>
             </thead>
             <tbody id="logRows"></tbody>
           </table>
           <div id="listEmpty" class="empty">No logs yet. Log into an org in Chrome, or ⬆ upload .log files.</div>
+          <div id="emptyHero" class="empty-hero hidden">
+            <img class="hero-logo" src="logo.png" alt="" />
+            <h1 class="hero-title">Apex Log Analyzer</h1>
+            <p class="hero-sub">Capture, search, and analyze Salesforce Apex debug logs — with Claude on tap.</p>
+            <div class="hero-actions" id="heroActions">
+              <span class="hero-slot" id="heroOrgSlot"></span>
+              <span class="hero-or">or</span>
+              <span class="hero-slot" id="heroUploadSlot"></span>
+            </div>
+            <p class="hero-hint">Pick an org you're logged into in Chrome, or drop a <code>.log</code> file anywhere.</p>
+          </div>
           <div id="dropHint" class="drop-hint hidden">Drop .log files to add them</div>
         </div>
       </section>
 
-      <div class="resizer" id="resizeMain" title="Drag to resize"></div>
+      <div class="resizer hidden" id="resizeMain" title="Drag to resize"></div>
 
-      <section class="pane viewer-pane">
+      <section class="pane viewer-pane hidden" id="viewerPane">
         <div class="viewer-body">
           <div class="viewer-main">
             <div class="viewer-toolbar">
@@ -106,8 +131,8 @@
               <button id="viewIssues" class="seg" title="Detected issues + first-failure jump">⚠ Issues</button>
               <button id="viewVars" class="seg" title="Variable value tracking">🔬 Vars</button>
               <span class="spacer"></span>
-              <button id="relatedBtn" class="hidden" title="Find & analyze logs from the same transaction (incl. async)">🔗 Related</button>
-              <button id="diagnoseBtn" title="Ranked root-cause report from Claude (uses the full-log digest)">🔍 Diagnose</button>
+              <button id="relatedBtn" class="hidden" title="Find & analyze logs from the same transaction (incl. async)">🔗 Find logs generated together</button>
+              <button id="diagnoseBtn" title="Ranked root-cause report from Claude (uses the full-log digest)">🔍 Check this log with Claude</button>
               <button id="exportBtn" class="hidden" title="Export this investigation as Markdown">⤓ Export</button>
               <button id="explainProfile" class="hidden" title="Ask Claude to explain this profile">✨ Explain</button>
             </div>
@@ -122,7 +147,6 @@
               <label class="facet"><input type="checkbox" data-cat="flow" /> Flow/WF</label>
               <label class="facet"><input type="checkbox" data-cat="callout" /> Callouts</label>
               <span class="spacer"></span>
-              <label class="facet toggle"><input type="checkbox" id="collapseDupes" /> Collapse repeats</label>
               <button id="facetClear" class="mini" title="Show everything">Reset</button>
             </div>
             <pre id="logView" class="log-view" tabindex="0"><span class="empty">Select a log on the left to view it.</span></pre>
@@ -147,5 +171,29 @@
 
     <script src="model.js"></script>
     <script src="app.js"></script>
+    <script>
+      // Light/dark toggle — presentation only, independent of app.js.
+      (function () {
+        var btn = document.getElementById("themeToggle");
+        if (!btn) return;
+        function sync() {
+          var light = document.documentElement.getAttribute("data-theme") === "light";
+          btn.textContent = light ? "☀️" : "🌙";
+          btn.title = light ? "Switch to dark theme" : "Switch to light theme";
+        }
+        btn.addEventListener("click", function () {
+          var light = document.documentElement.getAttribute("data-theme") === "light";
+          if (light) {
+            document.documentElement.removeAttribute("data-theme");
+            try { localStorage.setItem("ala-theme", "dark"); } catch (e) {}
+          } else {
+            document.documentElement.setAttribute("data-theme", "light");
+            try { localStorage.setItem("ala-theme", "light"); } catch (e) {}
+          }
+          sync();
+        });
+        sync();
+      })();
+    </script>
   </body>
 </html>

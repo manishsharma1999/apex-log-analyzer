@@ -68,7 +68,8 @@ body { display: flex; flex-direction: column; height: 100vh; }
   background: rgba(0,0,0,0.28); border: 1px solid #7a4a10;
   white-space: nowrap; user-select: none;
 }
-.credit:hover { color: #fff; text-decoration: underline; border-color: #ffd9a6; }
+.credit:hover { color: #fff; border-color: #ffd9a6; }
+.credit .credit-name { text-decoration: underline; text-underline-offset: 2px; }
 
 .topbar {
   display: flex;
@@ -103,8 +104,31 @@ body { display: flex; flex-direction: column; height: 100vh; }
 .brand .app-logo { width: 26px; height: 26px; flex: 0 0 auto; border-radius: 6px; object-fit: cover; }
 .toolbar { display: flex; align-items: center; gap: 8px; flex: 1; }
 .spacer { flex: 1; }
-.model-pick, .org-pick { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 12px; white-space: nowrap; }
-.model-pick select, .org-pick select { padding: 5px 8px; }
+/* Label + dropdown bound into one seamless pill so they read as a single control */
+.model-pick, .org-pick {
+  display: inline-flex; align-items: center; white-space: nowrap;
+  border: 1px solid var(--border); border-radius: 999px;
+  background: var(--bg-3); overflow: hidden;
+  transition: border-color var(--t-fast), box-shadow var(--t-fast);
+}
+.model-pick:hover, .org-pick:hover,
+.model-pick:focus-within, .org-pick:focus-within { border-color: var(--accent); }
+.pick-label {
+  padding: 6px 11px 6px 14px; color: var(--muted);
+  font-size: 12px; font-weight: 600;
+  border-right: 1px solid var(--border);
+}
+.model-pick select, .org-pick select {
+  border: none; background: transparent; border-radius: 0; margin: 0;
+  padding: 6px 30px 6px 12px; font-weight: 600; color: var(--text);
+  appearance: none; -webkit-appearance: none;
+  background-image: linear-gradient(45deg, transparent 50%, var(--muted) 50%),
+                    linear-gradient(135deg, var(--muted) 50%, transparent 50%);
+  background-position: right 14px center, right 9px center;
+  background-size: 5px 5px, 5px 5px; background-repeat: no-repeat;
+}
+.model-pick select:hover, .org-pick select:hover { background-color: transparent; }
+.model-pick select:focus-visible, .org-pick select:focus-visible { outline: none; box-shadow: none; }
 
 /* top-right Salesforce (MCP knowledge search) button */
 .sf-btn { background: #0b5cab; border-color: #0b5cab; color: #fff; white-space: nowrap; }
@@ -163,7 +187,7 @@ button:focus-visible, select:focus-visible, input:focus-visible {
 input:focus { outline: none; border-color: var(--accent); box-shadow: var(--shadow-glow); }
 button:disabled, input:disabled { opacity: 0.5; cursor: not-allowed; }
 button.primary { background: var(--accent-grad); border-color: transparent; color: #fff; box-shadow: 0 2px 10px rgba(74,158,255,0.3); }
-button.primary:hover:not(:disabled) { filter: brightness(1.08); box-shadow: 0 4px 16px rgba(74,158,255,0.42); }
+button.primary:hover:not(:disabled) { background: var(--accent-grad); color: #fff; filter: brightness(1.08); box-shadow: 0 4px 16px rgba(74,158,255,0.42); }
 #autoBtn.on { color: var(--green); border-color: var(--green); box-shadow: 0 0 12px rgba(63,185,80,0.2); }
 #autoBtn.off { color: var(--muted); }
 .pulse { animation: pulse 1.2s ease-in-out infinite; }
@@ -183,6 +207,9 @@ button.primary:hover:not(:disabled) { filter: brightness(1.08); box-shadow: 0 4p
 .pane { display: flex; flex-direction: column; min-height: 0; }
 .list-pane { width: 46%; min-width: 240px; }
 .viewer-pane { flex: 1; min-width: 0; }
+/* When no log is open the viewer pane is hidden — let the list take the full
+   width (overrides any inline width left over from dragging the divider). */
+.layout.solo .list-pane { width: 100% !important; }
 
 .list-header {
   display: flex;
@@ -205,17 +232,26 @@ button.primary:hover:not(:disabled) { filter: brightness(1.08); box-shadow: 0 4p
 .ctl-sep { flex: 0 0 auto; width: 1px; height: 20px; background: var(--border); margin: 0 3px; }
 .list-header.sub { border-top: none; padding-top: 0; }
 .list-header.sub input { border-color: var(--accent-2); }
-.bulkbar { background: #14293f; padding: 8px; }
+.bulkbar { background: #14293f; gap: 10px; }
+/* Two-class selector so it beats `.list-header.sub { padding-top: 0 }`, which was
+   pinning the buttons to the top. Equal top/bottom padding centers them. */
+.list-header.bulkbar { padding: 6px 10px; align-items: center; }
+.bulkbar button { flex: 0 0 auto; }
 .bulkbar #selCount { color: #9dc7ff; font-weight: 600; }
 .count { color: var(--muted); font-size: 12px; white-space: nowrap; }
-th.chk, td.chk { width: 30px; text-align: center; padding-left: 8px; padding-right: 0; }
+/* Separate the search-row tallies (matches in log · logs matched · shown/total)
+   with a faint divider so they don't read as one run-on string. */
+.search-row .count:not(:empty) { padding-left: 12px; border-left: 1px solid var(--border); }
+th.rownum, td.rownum { width: 20px; text-align: right; padding-left: 6px; padding-right: 3px; color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+th.chk, td.chk { width: 22px; text-align: center; padding-left: 3px; padding-right: 1px; }
 td.chk input, th.chk input { cursor: pointer; width: 15px; height: 15px; vertical-align: middle; }
-th.dl, td.dl { width: 26px; text-align: center; padding-left: 0; padding-right: 0; }
+th.dl, td.dl { width: 22px; text-align: center; padding-left: 1px; padding-right: 4px; }
 .icon-btn {
-  background: none; border: none; padding: 2px 4px; border-radius: 4px;
+  background: none; border: none; padding: 2px 3px; border-radius: 4px;
   color: var(--muted); font-size: 13px; line-height: 1; cursor: pointer;
 }
 .icon-btn:hover { color: var(--accent); background: var(--bg-3); }
+.dl-ico { width: 15px; height: 15px; display: block; }
 .status-pill.up { background: #2a2140; color: var(--accent-2); }
 /* One tile per matched log: the label row (log metadata) plus a strip of
    search-result preview rows below it, all reading as a single card. The label
@@ -302,13 +338,50 @@ tbody tr.selected { background: #1a2740; }
 
 .empty { padding: 24px; color: var(--muted); text-align: center; }
 
+/* Cold-start welcome hero — centered card with a big app mark and the two ways
+   in (pick an org / upload a .log), grouped together instead of flung to the
+   toolbar corners. */
+.empty-hero {
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  text-align: center; gap: 14px; min-height: 60vh; padding: 48px 24px;
+  animation: fadeUp 0.35s var(--ease) both;
+}
+.hero-logo {
+  width: 88px; height: 88px; border-radius: 22px;
+  box-shadow: var(--shadow-2); margin-bottom: 4px;
+}
+.hero-title { margin: 0; font-size: 28px; font-weight: 700; letter-spacing: -0.02em; }
+.hero-sub { margin: -6px 0 8px; max-width: 440px; color: var(--muted); font-size: 14px; line-height: 1.5; }
+.hero-actions { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; justify-content: center; }
+.hero-slot { display: inline-flex; }
+.hero-or { color: var(--muted); font-size: 13px; text-transform: uppercase; letter-spacing: 0.08em; }
+.hero-hint { margin: 6px 0 0; color: var(--muted); font-size: 12px; }
+.hero-hint code {
+  font-family: ui-monospace, monospace; font-size: 11px;
+  padding: 1px 5px; border-radius: 5px; background: var(--bg-3); border: 1px solid var(--border);
+}
+/* Make the relocated controls read as the primary call-to-action in the hero. */
+.hero-actions .org-pick { padding: 9px 14px; border-radius: 12px; }
+.hero-actions .org-pick select { font-size: 14px; }
+.hero-actions #uploadBtn {
+  padding: 10px 18px; font-size: 14px; font-weight: 600;
+  background: var(--accent-grad); border-color: transparent; color: #fff;
+  box-shadow: 0 4px 16px rgba(74,158,255,0.42);
+}
+.hero-actions #uploadBtn:hover:not(:disabled) { filter: brightness(1.08); }
+
 .viewer-body { flex: 1; display: flex; min-height: 0; }
 .viewer-main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
 .viewer-toolbar {
   display: flex; align-items: center; gap: 6px;
   padding: 6px 8px; background: var(--bg-2);
   border-bottom: 1px solid var(--border);
+  flex-wrap: wrap; row-gap: 6px;
 }
+/* Keep each action button on a single line (labels like "Find logs generated
+   together" must not wrap into tall multi-line pills); when the analysis panel
+   opens and space is tight, whole buttons wrap to the next row instead. */
+.viewer-toolbar button { white-space: nowrap; flex: 0 0 auto; }
 .seg { padding: 4px 10px; font-size: 12px; }
 .seg.on { background: var(--accent); border-color: var(--accent); color: #fff; }
 
@@ -367,14 +440,37 @@ tbody tr.selected { background: #1a2740; }
 
 /* noise-filter facet bar (raw view) */
 .facet-bar {
-  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
-  padding: 5px 10px; background: var(--bg-2);
+  display: flex; align-items: center; gap: 7px; flex-wrap: wrap;
+  padding: 8px 12px; background: var(--bg-2);
   border-bottom: 1px solid var(--border); font-size: 12px;
 }
-.facet-label { color: var(--muted); }
-.facet { display: inline-flex; align-items: center; gap: 4px; color: var(--muted); cursor: pointer; white-space: nowrap; }
-.facet input { width: 14px; height: 14px; margin: 0; }
-.mini { padding: 3px 8px; font-size: 11px; }
+.facet-label { color: var(--muted); font-weight: 600; margin-right: 1px; }
+/* Filter categories render as toggle chips: outlined when off, filled when on.
+   The native checkbox is kept (visually hidden) so app.js + data-cat still work. */
+.facet {
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 4px 12px; border-radius: 999px;
+  border: 1px solid var(--border); background: var(--bg-3);
+  color: var(--muted); cursor: pointer; white-space: nowrap;
+  font-weight: 500; user-select: none;
+  transition: border-color var(--t-fast), background var(--t-fast), color var(--t-fast);
+}
+.facet:hover { border-color: var(--accent); color: var(--text); }
+.facet input { width: 13px; height: 13px; margin: 0; cursor: pointer; accent-color: var(--accent); flex: 0 0 auto; }
+.facet:has(input:checked) {
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  border-color: var(--accent); color: var(--accent); font-weight: 600;
+}
+.facet:has(input[data-cat="error"]) input { accent-color: var(--red); }
+.facet:has(input[data-cat="error"]:checked) {
+  background: color-mix(in srgb, var(--red) 16%, transparent);
+  border-color: var(--red); color: var(--red);
+}
+.facet.toggle:has(input:checked) {
+  background: color-mix(in srgb, var(--accent-2) 18%, transparent);
+  border-color: var(--accent-2); color: var(--accent-2);
+}
+.mini { padding: 4px 11px; font-size: 11px; border-radius: 999px; }
 .mini.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
 .mini.danger { background: #3a1d1d; border-color: var(--red); color: #ff9a92; }
 
@@ -612,11 +708,12 @@ tbody tr.selected { background: #1a2740; }
   border-radius: 999px;
   padding: 5px 12px;
   color: var(--muted);
-  background: transparent;
-  border-color: transparent;
+  background: var(--bg-3);
+  border: 1px solid var(--border);
 }
-.seg:hover:not(:disabled) { background: var(--bg-3); color: var(--text); transform: none; }
-.seg.on {
+.seg:hover:not(:disabled) { background: var(--bg-3); border-color: var(--accent); color: var(--text); transform: none; }
+.seg.on,
+.seg.on:hover:not(:disabled) {
   background: var(--accent-grad);
   border-color: transparent;
   color: #fff;
@@ -663,6 +760,108 @@ tbody td { transition: background var(--t-fast); }
 /* The credit chip in the banner gets a gentle sheen on hover. */
 .credit { transition: color var(--t-fast), border-color var(--t-fast), background var(--t-fast), transform var(--t-fast); }
 .credit:hover { transform: translateY(-50%) scale(1.03); background: rgba(0,0,0,0.4); }
+
+/* ==========================================================================
+   LIGHT THEME
+   Activated by data-theme="light" on <html>. Additive only — every rule below
+   overrides a dark value with a light equivalent; the dark design above is
+   unchanged. The amber authorized-use banner stays as-is (intentionally loud).
+   ========================================================================== */
+:root[data-theme="light"] {
+  /* Clean white palette. */
+  --bg: #ffffff;
+  --bg-2: #ffffff;
+  --bg-3: #f1f3f5;
+  --border: #e3e6ea;
+  --border-soft: #eef0f3;
+  --text: #1b2330;
+  --muted: #5b6473;
+  --green: #2ea043;
+  --red: #d1242f;
+  --amber: #9a6700;
+  --mark: #ffe066;
+  --shadow-1: 0 1px 2px rgba(20,22,26,0.08);
+  --shadow-2: 0 8px 24px rgba(20,22,26,0.14);
+  --shadow-glow: 0 0 0 3px rgba(74,158,255,0.22);
+}
+
+:root[data-theme="light"] body { background: #ffffff; }
+:root[data-theme="light"] .topbar { background: #ffffff; }
+:root[data-theme="light"] .brand span { background: linear-gradient(90deg, #1b2330 0%, #4a5670 100%); -webkit-background-clip: text; background-clip: text; }
+
+:root[data-theme="light"] button:hover:not(:disabled) { background: #eef1f5; }
+/* Keep the primary (Fetch logs / Analyze) gradient + white text on hover — the
+   generic light hover above was turning it into white-on-grey (invisible label). */
+:root[data-theme="light"] button.primary:hover:not(:disabled) { background: var(--accent-grad); color: #fff; }
+/* Active view-segment button stays blue even while hovered — the generic light
+   button:hover above (0,4,1) would otherwise outrank .seg.on:hover (0,4,0) and
+   grey it out until the mouse left. Higher-specificity light rule wins. */
+:root[data-theme="light"] .seg.on,
+:root[data-theme="light"] .seg.on:hover:not(:disabled) {
+  background: var(--accent-grad); border-color: transparent; color: #fff;
+}
+:root[data-theme="light"] #search:focus { background: #f4f6f9; }
+
+:root[data-theme="light"] .status.info { background: #e4efff; color: #1f5fb0; }
+:root[data-theme="light"] .status.error { background: #fdeaea; color: #b42318; }
+:root[data-theme="light"] .status.success { background: #e6f6ec; color: #1a7f37; }
+
+:root[data-theme="light"] .bulkbar { background: #e4efff; }
+:root[data-theme="light"] .bulkbar #selCount { color: #1f5fb0; }
+:root[data-theme="light"] .comparebar { background: #efeaff; }
+:root[data-theme="light"] .comparebar #compareStep { color: #6a4dd6; }
+
+:root[data-theme="light"] .status-pill.up { background: #efeaff; color: var(--accent-2); }
+:root[data-theme="light"] .status-pill.ok { background: #e6f6ec; color: #1a7f37; }
+:root[data-theme="light"] .status-pill.err { background: #fdeaea; color: #b42318; }
+
+:root[data-theme="light"] tbody tr:hover,
+:root[data-theme="light"] tbody tr.preview-row:hover > td { background: #f2f5f9; }
+/* Selected / active-hit rows keep their highlight while hovered — the light
+   hover rule above would otherwise cover them until the mouse moved off. */
+:root[data-theme="light"] tbody tr.selected,
+:root[data-theme="light"] tbody tr.selected:hover { background: #dbe8fb; }
+:root[data-theme="light"] tbody tr.preview-row.pv-active > td,
+:root[data-theme="light"] tbody tr.preview-row.pv-active:hover > td { background: #cfe0fb; }
+:root[data-theme="light"] .drop-hint { background: rgba(255,255,255,0.92); }
+
+:root[data-theme="light"] .log-view { background: #fafbfc; }
+:root[data-theme="light"] .log-view.code { color: #1b2330; }
+:root[data-theme="light"] .cline::before { color: #aab2c0; }
+:root[data-theme="light"] .cline:hover { background: rgba(0,0,0,0.035); }
+:root[data-theme="light"] .cline:hover::before { color: #6b7385; }
+
+:root[data-theme="light"] .mini.danger { background: #fdeaea; border-color: var(--red); color: #b42318; }
+:root[data-theme="light"] .sev-badge.high { background: #fdeaea; color: #b42318; }
+:root[data-theme="light"] .sev-badge.medium { background: #fbf1dc; color: #8a5a00; }
+:root[data-theme="light"] .sev-badge.low { background: #e4efff; color: #1f5fb0; }
+:root[data-theme="light"] .var-name.on { background: #dbe8fb; color: #1f5fb0; }
+
+:root[data-theme="light"] .analysis-content .md-table tr:nth-child(even) td { background: rgba(0,0,0,0.025); }
+:root[data-theme="light"] .modal-card { background: #ffffff; }
+
+/* Apex syntax tokens tuned for the light code surface */
+:root[data-theme="light"] .t-time    { color: #8a93a3; }
+:root[data-theme="light"] .t-punc    { color: #aab2c0; }
+:root[data-theme="light"] .t-event   { color: #1f6fd6; }
+:root[data-theme="light"] .t-debug   { color: #1a7f37; }
+:root[data-theme="light"] .t-soql    { color: #9a6700; }
+:root[data-theme="light"] .t-enter   { color: #7a3fd0; }
+:root[data-theme="light"] .t-exit    { color: #6b7385; }
+:root[data-theme="light"] .t-limit   { color: #0e7490; }
+:root[data-theme="light"] .t-err     { color: #d1242f; }
+:root[data-theme="light"] .t-lineref { color: #b5651d; }
+
+:root[data-theme="light"] * { scrollbar-color: #c2cad6 transparent; }
+:root[data-theme="light"] ::-webkit-scrollbar-thumb { background: #c2cad6; }
+:root[data-theme="light"] ::-webkit-scrollbar-thumb:hover { background: #aab2c0; }
+
+/* Theme toggle button in the toolbar */
+.theme-toggle {
+  flex: 0 0 auto; width: 34px; height: 34px; padding: 0;
+  display: inline-flex; align-items: center; justify-content: center;
+  font-size: 15px; line-height: 1; border-radius: 999px;
+}
 
 /* Respect users who prefer reduced motion. */
 @media (prefers-reduced-motion: reduce) {

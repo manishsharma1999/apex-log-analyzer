@@ -929,7 +929,12 @@ function serveStatic(res, urlPath) {
   const file = urlPath === "/" ? "app.html" : urlPath.replace(/^\//, "");
   const full = path.join(WEB_DIR, file);
   if (!full.startsWith(WEB_DIR) || !fs.existsSync(full)) { res.writeHead(404); return res.end("Not found"); }
-  res.writeHead(200, { "Content-Type": MIME[path.extname(full)] || "text/plain" });
+  // Local dev tool: never let the browser serve a stale app.css / app.js / app.html,
+  // so edits show up on a normal reload (no Cmd+Shift+R needed).
+  res.writeHead(200, {
+    "Content-Type": MIME[path.extname(full)] || "text/plain",
+    "Cache-Control": "no-cache, no-store, must-revalidate",
+  });
   fs.createReadStream(full).pipe(res);
 }
 
