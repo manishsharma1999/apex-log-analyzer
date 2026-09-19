@@ -25,6 +25,27 @@ html, body {
 
 body { display: flex; flex-direction: column; height: 100vh; }
 
+/* Static, always-present authorized-use banner. No close control — it cannot be
+   dismissed; it stays pinned above everything for the life of the session. */
+.use-banner {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 8px 18px;
+  padding: 7px 16px;
+  background: #4a2a00;
+  color: #ffd9a6;
+  border-bottom: 1px solid #7a4a10;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  user-select: none;
+}
+.use-banner .ub-msg { text-align: center; }
+.use-banner strong { color: #ffe9c9; text-decoration: underline; }
+
 .topbar {
   display: flex;
   align-items: center;
@@ -33,6 +54,23 @@ body { display: flex; flex-direction: column; height: 100vh; }
   background: var(--bg-2);
   border-bottom: 1px solid var(--border);
 }
+
+/* Signed-in Salesforce user, shown in the banner. No width cap / ellipsis —
+   the full username must always be visible; it wraps to a new line if narrow. */
+.current-user {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 12px;
+  border-radius: 14px;
+  background: rgba(0,0,0,0.28);
+  border: 1px solid #7a4a10;
+  color: #ffe9c9;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.current-user .cu-name { font-weight: 700; }
+.current-user .cu-username { color: #ffd9a6; font-weight: 600; }
 .brand { font-weight: 600; font-size: 15px; white-space: nowrap; display: flex; align-items: center; gap: 9px; }
 .brand .app-logo { width: 26px; height: 26px; flex: 0 0 auto; border-radius: 6px; object-fit: cover; }
 .toolbar { display: flex; align-items: center; gap: 8px; flex: 1; }
@@ -180,19 +218,17 @@ tbody tr.selected { background: #1a2740; }
 /* VS Code-style code view with a non-selectable line-number gutter.
    The numbers are CSS-generated content, so ⌘A / copy never picks them up. */
 .log-view.code { padding: 10px 0; color: #c9d1d9; }
-.code-lines { counter-reset: line; }
 .cline {
-  counter-increment: line;
   position: relative;
-  padding: 0 14px 0 62px;
+  padding: 0 14px 0 70px;
   white-space: pre-wrap;
   word-break: break-word;
 }
 .cline::before {
-  content: counter(line);
+  content: attr(data-ln);       /* absolute line number — survives noise filtering */
   position: absolute;
   left: 0;
-  width: 46px;
+  width: 54px;
   padding-right: 12px;
   text-align: right;
   color: #454b5a;               /* greyed out, but still visible */
@@ -202,6 +238,90 @@ tbody tr.selected { background: #1a2740; }
 }
 .cline:hover { background: rgba(255,255,255,0.03); }
 .cline:hover::before { color: #8b93a7; }
+.cline.line-flash { background: rgba(74,158,255,0.18); animation: lineflash 1.6s ease-out; }
+@keyframes lineflash { 0% { background: rgba(255,211,61,0.4); } 100% { background: rgba(74,158,255,0); } }
+.dup-badge { margin-left: 8px; padding: 0 6px; border-radius: 8px; background: var(--bg-3); color: var(--muted); font-size: 10px; }
+
+/* noise-filter facet bar (raw view) */
+.facet-bar {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  padding: 5px 10px; background: var(--bg-2);
+  border-bottom: 1px solid var(--border); font-size: 12px;
+}
+.facet-label { color: var(--muted); }
+.facet { display: inline-flex; align-items: center; gap: 4px; color: var(--muted); cursor: pointer; white-space: nowrap; }
+.facet input { width: 14px; height: 14px; margin: 0; }
+.mini { padding: 3px 8px; font-size: 11px; }
+.mini.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+.mini.danger { background: #3a1d1d; border-color: var(--red); color: #ff9a92; }
+
+/* data tables (Queries / Vars) reuse .prof-table */
+.datatable, .issues, .vars { padding: 12px 14px; }
+.q-row { cursor: pointer; }
+.q-row:hover { background: var(--bg-2); }
+.q-text { font-family: ui-monospace, monospace; word-break: break-all; }
+.q-hot td:first-child { color: var(--red); font-weight: 600; }
+.q-hot { background: rgba(248,81,73,0.06); }
+.hint.warn { color: var(--amber); }
+.profile .hint.warn { margin-top: 8px; }
+
+/* Issues view */
+.issues-actions { display: flex; gap: 8px; margin-bottom: 12px; flex-wrap: wrap; }
+.ok-note { color: var(--green); }
+.issue {
+  display: flex; align-items: flex-start; gap: 10px;
+  padding: 10px 12px; margin-bottom: 8px;
+  background: var(--bg-2); border: 1px solid var(--border);
+  border-left: 3px solid var(--border); border-radius: 6px;
+}
+.issue.sev-high { border-left-color: var(--red); }
+.issue.sev-medium { border-left-color: var(--amber); }
+.issue.sev-low { border-left-color: var(--accent); }
+.issue.jumpable { cursor: pointer; }
+.issue.jumpable:hover { border-color: var(--accent); }
+.sev-badge { flex: 0 0 auto; padding: 1px 8px; border-radius: 10px; font-size: 10px; font-weight: 600; }
+.sev-badge.high { background: #3a1d1d; color: var(--red); }
+.sev-badge.medium { background: #33280c; color: var(--amber); }
+.sev-badge.low { background: #14293f; color: var(--accent); }
+.issue-body { flex: 1; min-width: 0; }
+.issue-title { font-weight: 600; margin-bottom: 3px; }
+.issue-detail { color: var(--muted); font-size: 12px; word-break: break-word; }
+.issue-jump { flex: 0 0 auto; color: var(--accent); font-size: 11px; white-space: nowrap; }
+
+/* Vars view */
+.vars { display: flex; gap: 12px; height: 100%; align-items: stretch; }
+.vars-list { flex: 0 0 220px; display: flex; flex-direction: column; min-height: 0; }
+.vars-list input { margin-bottom: 8px; }
+.vars-names { overflow: auto; flex: 1; border: 1px solid var(--border); border-radius: 6px; }
+.var-name { padding: 5px 9px; cursor: pointer; display: flex; justify-content: space-between; gap: 6px; font-family: ui-monospace, monospace; font-size: 12px; border-bottom: 1px solid var(--border); }
+.var-name:hover { background: var(--bg-2); }
+.var-name.on { background: #1a2740; color: var(--accent); }
+.var-count { color: var(--muted); }
+.vars-timeline { flex: 1; overflow: auto; min-width: 0; }
+.var-row { cursor: pointer; }
+.var-row:hover { background: var(--bg-2); }
+.var-val { font-family: ui-monospace, monospace; word-break: break-all; }
+
+/* Flame graph */
+.log-view.flame-view { white-space: normal; padding: 0; }
+.flame-wrap { position: relative; padding: 8px; }
+.flame-controls { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; }
+.flame-canvas { display: block; width: 100%; cursor: pointer; }
+.flame-tip {
+  position: absolute; z-index: 10; pointer-events: none;
+  background: var(--bg-3); border: 1px solid var(--border); border-radius: 6px;
+  padding: 6px 9px; font-size: 11px; max-width: 240px; line-height: 1.5;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.4);
+}
+
+/* table-view container fills the pane so inner tables can scroll */
+.log-view.table-view, .log-view.issues-view, .log-view.vars-view { white-space: normal; color: var(--text); }
+
+/* Related-logs modal rows */
+.rel-list { max-height: 300px; overflow: auto; margin: 6px 0 4px; }
+.rel-row { display: flex; align-items: center; gap: 8px; padding: 5px 4px; color: var(--text); cursor: pointer; border-bottom: 1px solid var(--border); }
+.rel-row input { width: 15px; height: 15px; }
+.analysis-head .spacer { flex: 1; }
 
 /* Apex debug-log syntax colours */
 .t-time    { color: #5c6370; }

@@ -59,9 +59,9 @@ function traceHttp(method, url) {
 
 // --- sessions from Chrome -------------------------------------------------
 let orgCache = { at: 0, orgs: [] };
-function getOrgs() {
+function getOrgs(force = false) {
   const now = Date.now();
-  if (now - orgCache.at < 4000 && orgCache.orgs.length) return orgCache.orgs;
+  if (!force && now - orgCache.at < 4000 && orgCache.orgs.length) return orgCache.orgs;
   const orgs = detectOrgSessions();
   orgCache = { at: now, orgs };
   return orgs;
@@ -124,10 +124,16 @@ async function rawFetch(session, urlPath, opts = {}) {
 // 200 from /services/oauth2/userinfo; an expired/invalid one returns 401/403.
 // Cached ~60s per host so we don't re-check on every poll.
 const sessionOkCache = new Map(); // apiHost -> { at, ok }
-async function sessionActive(org) {
+async function sessionActive(org, force = false) {
   const now = Date.now();
   const cached = sessionOkCache.get(org.apiHost);
-  if (cached && now - cached.at < 60000) return cached.ok;
+  // Cache a live session for 60s (no need to re-check a known-good org every
+  // poll), but a "not valid" result for only ~4s: a just-logged-in org whose
+  // session was briefly invalid mid-login then shows up almost immediately
+  // instead of being hidden for a full minute. `force` (a user Refresh / tab
+  // focus) bypasses the cache entirely so a just-logged-OUT org disappears at
+  // once instead of lingering for the rest of its cached 60s.
+  if (!force && cached && now - cached.at < (cached.ok ? 60000 : 4000)) return cached.ok;
   let ok = false;
   try {
     // Hit the same REST API the app actually uses. redirect:"manual" so an
@@ -144,9 +150,9 @@ async function sessionActive(org) {
   sessionOkCache.set(org.apiHost, { at: now, ok });
   return ok;
 }
-async function listOrgsForUi() {
-  const orgs = getOrgs();
-  const checked = await Promise.all(orgs.map(async (o) => ({ o, ok: await sessionActive(o) })));
+async function listOrgsForUi(force = false) {
+  const orgs = getOrgs(force);
+  const checked = await Promise.all(orgs.map(async (o) => ({ o, ok: await sessionActive(o, force) })));
   return checked.filter((c) => c.ok).map((c) => ({ value: c.o.apiHost, label: c.o.label }));
 }
 
@@ -172,6 +178,29 @@ async function getLogBody(apiHost, id) {
   bodyCache.set(cacheKey, text);
   if (bodyCache.size > 500) bodyCache.delete(bodyCache.keys().next().value);
   return text;
+}
+
+// Identity of the user whose Chrome session we're using — so the operator can
+// always see which Salesforce user this tool is acting as. Read-only GET to the
+// standard OpenID Connect userinfo endpoint. Cached per host (identity is stable
+// for the life of a session).
+const identityCache = new Map(); // apiHost:sessionId -> { name, username, orgId }
+async function whoami(apiHost) {
+  const s = await getSession(apiHost);
+  // Key on the session id, not just the host: logging out and back in as a
+  // different user on the same org must not return the previous user's name.
+  const cacheKey = `${apiHost}:${s.sessionId}`;
+  if (identityCache.has(cacheKey)) return identityCache.get(cacheKey);
+  const res = await rawFetch(s, "/services/oauth2/userinfo");
+  const j = await res.json();
+  const info = {
+    name: j.name || j.preferred_username || j.nickname || "",
+    username: j.preferred_username || j.email || "",
+    orgId: j.organization_id || "",
+  };
+  if (identityCache.size > 50) identityCache.delete(identityCache.keys().next().value);
+  identityCache.set(cacheKey, info);
+  return info;
 }
 
 // Run an async fn over items with bounded concurrency.
@@ -430,6 +459,19 @@ You are given the object's active triggers (with before/after events), record-tr
 Lay out the Salesforce Order of Execution for a save on this object, in order, showing which of THIS object's automations run at each step (before-save flows, before triggers, validation rules, duplicate rules, after triggers, assignment/auto-response/workflow, after-save flows, roll-up summaries, etc.).
 Then flag risks: multiple automations writing the same field, ambiguous flow ordering, before vs after conflicts, recursion risk. Use Markdown. Only reference automations present in the provided data.`;
 
+// Ranked root-cause analysis over a STRUCTURED DIGEST (extracted client-side
+// from the whole log), so we reason over full signal instead of a truncated
+// head+tail slice of raw text.
+const CLAUDE_DIAGNOSE_SYSTEM = `You are an expert Salesforce engineer performing root-cause analysis on an Apex transaction.
+You are given a STRUCTURED DIGEST already extracted from the FULL debug log (governor limits, a SOQL inventory with repeat counts, DML, exceptions, the slowest operations, and pre-computed deterministic findings). Treat it as complete and authoritative — it is NOT truncated.
+Produce a RANKED list of probable root causes, most likely first. For each:
+- **Cause** — one line.
+- **Confidence** — High / Medium / Low.
+- **Evidence** — cite concrete values from the digest (counts, ms, limits, query text, exception messages).
+- **Fix** — a specific, actionable change.
+- **How to confirm** — the quickest way to validate it.
+Start with a one-sentence verdict. If nothing is wrong, say the transaction looks healthy and why. Use Markdown. Do not invent data not present in the digest.`;
+
 const MAX_LOG_CHARS = 160000;
 function truncateLog(body, limit = MAX_LOG_CHARS) {
   if (body.length <= limit) return { text: body, truncated: false };
@@ -575,8 +617,17 @@ async function runClaude(system, userContent, cliTail) {
   return analyzeViaCli(system + cliTail, userContent);
 }
 
-// #9 Compare — two groups of logs (each group may span several logs).
-async function compareLogs({ groupA, groupB }) {
+// #9 Compare — two groups of logs (each group may span several logs). The
+// client sends structured digests (full-signal, not truncated) when available;
+// we fall back to raw text for older callers.
+async function compareLogs({ groupA, groupB, digestA, digestB }) {
+  if (digestA != null || digestB != null) {
+    const userContent =
+      "GROUP A (baseline) — structured digest:\n\n" + String(digestA || "") + "\n\n" +
+      "GROUP B (comparison) — structured digest:\n\n" + String(digestB || "");
+    return runClaude(CLAUDE_COMPARE_SYSTEM, userContent,
+      "\n\nTwo structured digests are on standard input (GROUP A then GROUP B). Do not use any tools; compare them.");
+  }
   const half = Math.floor(MAX_LOG_CHARS / 2);
   const a = truncateLog(String(groupA || ""), half);
   const b = truncateLog(String(groupB || ""), half);
@@ -585,6 +636,13 @@ async function compareLogs({ groupA, groupB }) {
     "GROUP B (comparison):\n\n```\n" + b.text + "\n```";
   return runClaude(CLAUDE_COMPARE_SYSTEM, userContent,
     "\n\nThe two log groups are on standard input (GROUP A then GROUP B). Do not use any tools; just compare them.");
+}
+
+// #5 Diagnose — ranked root causes from a structured digest.
+async function diagnoseLog({ digest }) {
+  if (!digest) throw new Error("No digest provided to diagnose.");
+  return runClaude(CLAUDE_DIAGNOSE_SYSTEM, "Structured digest of the Apex log:\n\n" + String(digest),
+    "\n\nThe structured digest is on standard input. Do not use any tools; base your analysis only on it.");
 }
 
 // #11 Code Health — review the Apex source that ran in the given log(s).
@@ -707,7 +765,8 @@ const server = http.createServer(async (req, res) => {
       pendingQuit = setTimeout(() => { console.log("Browser closed — shutting down."); process.exit(0); }, 4000);
       return sendJson(res, 200, { ok: true });
     }
-    if (p === "/api/orgs") return sendJson(res, 200, { orgs: await listOrgsForUi() });
+    if (p === "/api/orgs") return sendJson(res, 200, { orgs: await listOrgsForUi(u.searchParams.get("fresh") === "1") });
+    if (p === "/api/whoami") return sendJson(res, 200, await whoami(u.searchParams.get("org")));
     if (p === "/api/diag") return sendJson(res, 200, diagnose());
     if (p === "/api/logs") return sendJson(res, 200, { records: await listLogs(u.searchParams.get("org")) });
     if (p === "/api/search") return sendJson(res, 200, { matches: await searchLogs(u.searchParams.get("org"), u.searchParams.get("q") || "") });
@@ -720,8 +779,12 @@ const server = http.createServer(async (req, res) => {
       return sendJson(res, 200, { text: await analyze({ apiHost: org, id, question, logText, freeform, history }) });
     }
     if (p === "/api/compare" && req.method === "POST") {
-      const { groupA, groupB } = await readBody(req);
-      return sendJson(res, 200, { text: await compareLogs({ groupA, groupB }) });
+      const { groupA, groupB, digestA, digestB } = await readBody(req);
+      return sendJson(res, 200, { text: await compareLogs({ groupA, groupB, digestA, digestB }) });
+    }
+    if (p === "/api/diagnose" && req.method === "POST") {
+      const { digest } = await readBody(req);
+      return sendJson(res, 200, { text: await diagnoseLog({ digest }) });
     }
     if (p === "/api/codehealth" && req.method === "POST") {
       const { org, logText } = await readBody(req);
