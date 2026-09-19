@@ -169,7 +169,10 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
 .search-wrap { flex: 1 1 50%; display: flex; align-items: center; gap: 8px; min-width: 0; }
 .fetch-wrap { flex: 1 1 50%; display: flex; align-items: center; justify-content: flex-end; gap: 8px; min-width: 0; }
 .fetch-label { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 13px; white-space: nowrap; }
-.fetch-label input { flex: 0 0 auto; width: 64px; text-align: right; }
+.fetch-label input { flex: 0 0 auto; width: 56px; text-align: center; -moz-appearance: textfield; appearance: textfield; }
+/* No up/down spinner — plain typeable number field. */
+.fetch-label input::-webkit-outer-spin-button,
+.fetch-label input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
 .fetch-wrap #fetchBtn { flex: 0 0 auto; white-space: nowrap; }
 .list-header.sub { border-top: none; padding-top: 0; }
 .list-header.sub input { border-color: var(--accent-2); }
@@ -365,9 +368,11 @@ tbody tr.selected { background: #1a2740; }
 .log-view.table-view, .log-view.issues-view, .log-view.vars-view { white-space: normal; color: var(--text); }
 
 /* Related-logs modal rows */
-.rel-list { max-height: 300px; overflow: auto; margin: 6px 0 4px; }
-.rel-row { display: flex; align-items: center; gap: 8px; padding: 5px 4px; color: var(--text); cursor: pointer; border-bottom: 1px solid var(--border); }
-.rel-row input { width: 15px; height: 15px; }
+.rel-list { max-height: 46vh; overflow: auto; margin: 8px 0 4px; }
+.rel-row { display: flex; align-items: flex-start; gap: 10px; padding: 9px 6px; color: var(--text); cursor: pointer; border-bottom: 1px solid var(--border); font-size: 13px; line-height: 1.45; }
+.rel-row:last-child { border-bottom: none; }
+.rel-row input { flex: 0 0 auto; width: 16px; height: 16px; margin-top: 2px; }
+.rel-row > span { flex: 1; min-width: 0; overflow-wrap: anywhere; }
 .analysis-head .spacer { flex: 1; }
 
 /* Apex debug-log syntax colours */
@@ -472,8 +477,11 @@ tbody tr.selected { background: #1a2740; }
   max-width: 90vw;
 }
 .modal-card h2 { margin: 0 0 14px; }
-.modal-card label { display: block; margin-bottom: 12px; color: var(--muted); }
-.modal-card label input, .modal-card label select { width: 100%; margin-top: 4px; }
+/* Generic form-field labels — scoped so they don't hijack the .rel-row labels
+   (which lay a checkbox out beside text, not a full-width form control). */
+.modal-card label:not(.rel-row) { display: block; margin-bottom: 12px; color: var(--muted); }
+.modal-card label:not(.rel-row) input, .modal-card label:not(.rel-row) select { width: 100%; margin-top: 4px; }
+.modal-card--wide { width: 620px; }
 .hint { color: var(--muted); font-size: 11px; line-height: 1.4; }
 .modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 12px; }
 
