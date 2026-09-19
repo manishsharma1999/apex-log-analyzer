@@ -1,16 +1,26 @@
 :root {
-  --bg: #0f1115;
-  --bg-2: #171a21;
-  --bg-3: #1e222b;
+  --bg: #0d0f14;
+  --bg-2: #161a22;
+  --bg-3: #1e232d;
   --border: #2a2f3a;
+  --border-soft: #232833;
   --text: #e6e8ec;
   --muted: #9aa3b2;
   --accent: #4a9eff;
   --accent-2: #7c5cff;
+  --accent-grad: linear-gradient(135deg, #4a9eff 0%, #7c5cff 100%);
   --green: #3fb950;
   --red: #f85149;
   --amber: #d29922;
   --mark: #ffd33d;
+  --radius: 8px;
+  --radius-sm: 6px;
+  --shadow-1: 0 1px 2px rgba(0,0,0,0.3);
+  --shadow-2: 0 6px 20px rgba(0,0,0,0.35);
+  --shadow-glow: 0 0 0 3px rgba(74,158,255,0.25);
+  --ease: cubic-bezier(0.4, 0, 0.2, 1);
+  --t-fast: 120ms var(--ease);
+  --t-med: 200ms var(--ease);
 }
 
 * { box-sizing: border-box; }
@@ -18,9 +28,14 @@
 html, body {
   margin: 0;
   height: 100%;
-  background: var(--bg);
+  background:
+    radial-gradient(1200px 600px at 15% -10%, rgba(74,158,255,0.08), transparent 60%),
+    radial-gradient(1000px 700px at 110% 0%, rgba(124,92,255,0.08), transparent 55%),
+    var(--bg);
+  background-attachment: fixed;
   color: var(--text);
   font: 13px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  -webkit-font-smoothing: antialiased;
 }
 
 body { display: flex; flex-direction: column; height: 100vh; }
@@ -58,10 +73,13 @@ body { display: flex; flex-direction: column; height: 100vh; }
 .topbar {
   display: flex;
   align-items: center;
-  gap: 16px;
-  padding: 10px 16px;
-  background: var(--bg-2);
+  gap: 18px;
+  padding: 11px 18px;
+  background: linear-gradient(180deg, #1a1f28 0%, var(--bg-2) 100%);
   border-bottom: 1px solid var(--border);
+  box-shadow: var(--shadow-1);
+  position: relative;
+  z-index: 2;
 }
 
 /* Signed-in Salesforce user, shown in the banner. No width cap / ellipsis —
@@ -129,15 +147,23 @@ button, select, input {
   color: var(--text);
   background: var(--bg-3);
   border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 6px 10px;
+  border-radius: var(--radius-sm);
+  padding: 6px 11px;
   cursor: pointer;
+  transition: border-color var(--t-fast), background var(--t-fast),
+              box-shadow var(--t-fast), color var(--t-fast), transform var(--t-fast);
 }
-input[type="search"], input[type="text"], input[type="password"] { cursor: text; }
-button:hover:not(:disabled) { border-color: var(--accent); }
+input[type="search"], input[type="text"], input[type="password"], input[type="number"] { cursor: text; }
+button:hover:not(:disabled) { border-color: var(--accent); background: #232a36; transform: translateY(-1px); }
+button:active:not(:disabled) { transform: translateY(0); }
+button:focus-visible, select:focus-visible, input:focus-visible {
+  outline: none; border-color: var(--accent); box-shadow: var(--shadow-glow);
+}
+input:focus { outline: none; border-color: var(--accent); box-shadow: var(--shadow-glow); }
 button:disabled, input:disabled { opacity: 0.5; cursor: not-allowed; }
-button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
-#autoBtn.on { color: var(--green); border-color: var(--green); }
+button.primary { background: var(--accent-grad); border-color: transparent; color: #fff; box-shadow: 0 2px 10px rgba(74,158,255,0.3); }
+button.primary:hover:not(:disabled) { filter: brightness(1.08); box-shadow: 0 4px 16px rgba(74,158,255,0.42); }
+#autoBtn.on { color: var(--green); border-color: var(--green); box-shadow: 0 0 12px rgba(63,185,80,0.2); }
 #autoBtn.off { color: var(--muted); }
 .pulse { animation: pulse 1.2s ease-in-out infinite; }
 @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.4; } }
@@ -464,18 +490,25 @@ tbody tr.selected { background: #1a2740; }
 
 .modal {
   position: fixed; inset: 0;
-  background: rgba(0,0,0,0.6);
+  background: rgba(6,8,12,0.62);
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
   display: flex; align-items: center; justify-content: center;
   z-index: 100;
+  animation: modalFade var(--t-med);
 }
+@keyframes modalFade { from { opacity: 0; } to { opacity: 1; } }
 .modal-card {
-  background: var(--bg-2);
+  background: linear-gradient(180deg, #1b2029 0%, var(--bg-2) 100%);
   border: 1px solid var(--border);
-  border-radius: 10px;
-  padding: 20px 22px;
+  border-radius: 14px;
+  padding: 22px 24px;
   width: 420px;
   max-width: 90vw;
+  box-shadow: var(--shadow-2);
+  animation: modalPop 220ms var(--ease);
 }
+@keyframes modalPop { from { opacity: 0; transform: translateY(12px) scale(0.97); } to { opacity: 1; transform: none; } }
 .modal-card h2 { margin: 0 0 14px; }
 /* Generic form-field labels — scoped so they don't hijack the .rel-row labels
    (which lay a checkbox out beside text, not a full-width form control). */
@@ -500,3 +533,91 @@ tbody tr.selected { background: #1a2740; }
 .lim-warn .bar { background: var(--amber); }
 .lim-hot .bar { background: var(--red); }
 .lim-hot td:first-child { color: var(--red); }
+
+/* ==========================================================================
+   UI polish — spacing, focus states, micro-animations. Layout-preserving:
+   only visuals + transitions, no structural changes.
+   ========================================================================== */
+
+/* A touch more air in the toolbar so it reads less congested. */
+.toolbar { gap: 10px; }
+.toolbar button, .topbar button { padding: 7px 12px; }
+
+/* Brand: subtle gradient wordmark + logo lift. */
+.brand span { background: linear-gradient(90deg, #ffffff 0%, #b7c6df 100%); -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent; }
+.brand .app-logo { box-shadow: 0 2px 8px rgba(0,0,0,0.4); transition: transform var(--t-med); }
+.brand:hover .app-logo { transform: rotate(-6deg) scale(1.06); }
+
+/* List header + search field — roomier, rounded, glowing focus. */
+.list-header { padding: 10px; gap: 10px; }
+#search {
+  border-radius: 999px;
+  padding: 8px 14px;
+  background: var(--bg-3);
+  transition: box-shadow var(--t-fast), border-color var(--t-fast), background var(--t-fast);
+}
+#search:focus { background: #202632; }
+.fetch-label input { border-radius: 999px; }
+
+/* Segmented view switcher (Raw / Profile / Flame / …) as pills. */
+.viewer-toolbar { gap: 7px; padding: 8px 10px; }
+.seg {
+  border-radius: 999px;
+  padding: 5px 12px;
+  color: var(--muted);
+  background: transparent;
+  border-color: transparent;
+}
+.seg:hover:not(:disabled) { background: var(--bg-3); color: var(--text); transform: none; }
+.seg.on {
+  background: var(--accent-grad);
+  border-color: transparent;
+  color: #fff;
+  box-shadow: 0 2px 10px rgba(74,158,255,0.32);
+}
+
+/* Table rows — smoother hover + an accent rail on the selected row. */
+tbody tr { transition: background var(--t-fast); }
+tbody tr:hover { background: #1b212c; }
+tbody tr.selected {
+  background: linear-gradient(90deg, rgba(74,158,255,0.16), rgba(74,158,255,0.04));
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+tbody td { transition: background var(--t-fast); }
+
+/* Status pills a little more legible. */
+.status-pill { padding: 2px 9px; font-weight: 600; letter-spacing: 0.01em; }
+
+/* Status bar slides in rather than snapping. */
+.status { animation: slideDown 220ms var(--ease); }
+@keyframes slideDown { from { opacity: 0; transform: translateY(-6px); } to { opacity: 1; transform: none; } }
+
+/* Panes fade up on load for a polished first paint. */
+.list-pane, .viewer-pane { animation: fadeUp 320ms var(--ease) both; }
+.viewer-pane { animation-delay: 60ms; }
+@keyframes fadeUp { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+
+/* Bulk / compare bars slide down when they appear. */
+.list-header.sub:not(.hidden) { animation: slideDown 200ms var(--ease); }
+
+/* Analysis panel + its content ease in. */
+.analysis:not(.hidden) { animation: fadeUp 260ms var(--ease); }
+
+/* Salesforce (MCP) button gets a soft brand glow. */
+.sf-btn { box-shadow: 0 2px 10px rgba(11,92,171,0.35); }
+
+/* Slim, modern scrollbars throughout. */
+* { scrollbar-width: thin; scrollbar-color: #39414f transparent; }
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-thumb { background: #333b48; border-radius: 999px; border: 2px solid transparent; background-clip: padding-box; }
+::-webkit-scrollbar-thumb:hover { background: #454f61; background-clip: padding-box; }
+::-webkit-scrollbar-track { background: transparent; }
+
+/* The credit chip in the banner gets a gentle sheen on hover. */
+.credit { transition: color var(--t-fast), border-color var(--t-fast), background var(--t-fast), transform var(--t-fast); }
+.credit:hover { transform: translateY(-50%) scale(1.03); background: rgba(0,0,0,0.4); }
+
+/* Respect users who prefer reduced motion. */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: 0.001ms !important; animation-iteration-count: 1 !important; transition-duration: 0.001ms !important; }
+}
