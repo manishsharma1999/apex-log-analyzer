@@ -11,6 +11,7 @@
     <div class="use-banner" role="alert">
       <span class="ub-msg">⚠ Authorized use only — use this tool on a customer org <strong>only</strong> when the customer has granted you login access to it.</span>
       <span id="currentUser" class="current-user hidden" title="Salesforce user whose Chrome session this tool is using"></span>
+      <a class="credit" href="https://salesforce.enterprise.slack.com/team/U052FHMJLUD" target="_blank" rel="noopener noreferrer" title="Message Manish Sharma on Slack">Created by: Manish Sharma</a>
     </div>
     <header class="topbar">
       <div class="brand">
@@ -18,8 +19,9 @@
         <span>Apex Log Analyzer</span>
       </div>
       <div class="toolbar">
-        <select id="orgSelect" title="Salesforce org (from your Chrome session)"></select>
-        <button id="refreshBtn" title="Reload log list">↻ Refresh</button>
+        <label class="org-pick" title="Choose the Salesforce org (from your Chrome session)">Org
+          <select id="orgSelect"></select>
+        </label>
         <button id="autoBtn" title="Auto-refresh the log list every few seconds (does not create trace flags — manage debug logging yourself in Setup)" class="on">● Auto-refresh: ON</button>
         <button id="uploadBtn" title="Upload one or more .log files">⬆ Upload .log</button>
         <input id="fileInput" type="file" accept=".log,.txt,text/plain" multiple hidden />
@@ -41,10 +43,19 @@
     <main class="layout">
       <section class="pane list-pane" id="listPane">
         <div class="list-header">
-          <input id="search" type="search" placeholder="🔎 Search all logs — user, operation, status, or any text inside…" />
-          <span id="matchInfo" class="count"></span>
-          <span id="searchInfo" class="count"></span>
-          <span id="logCount" class="count"></span>
+          <div class="search-wrap">
+            <input id="search" type="search" placeholder="🔎 Search all logs — user, operation, status, or any text inside…" />
+            <span id="matchInfo" class="count"></span>
+            <span id="searchInfo" class="count"></span>
+            <span id="logCount" class="count"></span>
+          </div>
+          <div class="fetch-wrap">
+            <label class="fetch-label" title="Only fetch logs created in the last N minutes — keeps you from pulling the whole org">Last
+              <input id="windowMin" type="number" min="1" step="1" value="30" title="Time window in minutes" /> min
+            </label>
+            <button id="fetchBtn" class="primary" title="Fetch logs from the selected org for this time window">↻ Fetch logs</button>
+            <button id="fetchAllBtn" title="Fetch every log from the org, ignoring the time window">Fetch all</button>
+          </div>
         </div>
         <div class="list-header sub bulkbar hidden" id="bulkBar">
           <span id="selCount" class="count"></span>

@@ -28,13 +28,14 @@ body { display: flex; flex-direction: column; height: 100vh; }
 /* Static, always-present authorized-use banner. No close control — it cannot be
    dismissed; it stays pinned above everything for the life of the session. */
 .use-banner {
+  position: relative;
   flex: 0 0 auto;
   display: flex;
   align-items: center;
   justify-content: center;
   flex-wrap: wrap;
   gap: 8px 18px;
-  padding: 7px 16px;
+  padding: 7px 150px; /* room so the centered message never slides under the corner credit */
   background: #4a2a00;
   color: #ffd9a6;
   border-bottom: 1px solid #7a4a10;
@@ -45,6 +46,14 @@ body { display: flex; flex-direction: column; height: 100vh; }
 }
 .use-banner .ub-msg { text-align: center; }
 .use-banner strong { color: #ffe9c9; text-decoration: underline; }
+.credit {
+  position: absolute; right: 14px; top: 50%; transform: translateY(-50%);
+  color: #ffe9c9; text-decoration: none; font-weight: 700; font-size: 12px;
+  padding: 3px 10px; border-radius: 12px;
+  background: rgba(0,0,0,0.28); border: 1px solid #7a4a10;
+  white-space: nowrap; user-select: none;
+}
+.credit:hover { color: #fff; text-decoration: underline; border-color: #ffd9a6; }
 
 .topbar {
   display: flex;
@@ -75,8 +84,8 @@ body { display: flex; flex-direction: column; height: 100vh; }
 .brand .app-logo { width: 26px; height: 26px; flex: 0 0 auto; border-radius: 6px; object-fit: cover; }
 .toolbar { display: flex; align-items: center; gap: 8px; flex: 1; }
 .spacer { flex: 1; }
-.model-pick { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 12px; white-space: nowrap; }
-.model-pick select { padding: 5px 8px; }
+.model-pick, .org-pick { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 12px; white-space: nowrap; }
+.model-pick select, .org-pick select { padding: 5px 8px; }
 
 /* top-right Salesforce (MCP knowledge search) button */
 .sf-btn { background: #0b5cab; border-color: #0b5cab; color: #fff; white-space: nowrap; }
@@ -156,6 +165,12 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
   border-bottom: 1px solid var(--border);
 }
 .list-header input { flex: 1; }
+/* Top row is split in two: search on the left half, time-window fetch on the right. */
+.search-wrap { flex: 1 1 50%; display: flex; align-items: center; gap: 8px; min-width: 0; }
+.fetch-wrap { flex: 1 1 50%; display: flex; align-items: center; justify-content: flex-end; gap: 8px; min-width: 0; }
+.fetch-label { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 13px; white-space: nowrap; }
+.fetch-label input { flex: 0 0 auto; width: 64px; text-align: right; }
+.fetch-wrap #fetchBtn { flex: 0 0 auto; white-space: nowrap; }
 .list-header.sub { border-top: none; padding-top: 0; }
 .list-header.sub input { border-color: var(--accent-2); }
 .bulkbar { background: #14293f; padding: 8px; }

@@ -156,11 +156,21 @@ async function listOrgsForUi(force = false) {
   return checked.filter((c) => c.ok).map((c) => ({ value: c.o.apiHost, label: c.o.label }));
 }
 
-async function listLogs(apiHost) {
+async function listLogs(apiHost, mins) {
   const s = await getSession(apiHost);
+  // Optional time window: only pull logs created in the last N minutes, so we
+  // don't drag down the whole org. SOQL datetime literals are unquoted ISO8601
+  // with no milliseconds (e.g. 2026-09-19T12:00:00Z).
+  let where = "";
+  const m = Number(mins);
+  if (Number.isFinite(m) && m > 0) {
+    const since = new Date(Date.now() - m * 60000).toISOString().replace(/\.\d{3}Z$/, "Z");
+    where = ` WHERE StartTime >= ${since}`;
+  }
   const soql =
     "SELECT Id, LogUser.Name, Operation, Application, Status, LogLength, " +
-    "Request, StartTime, DurationMilliseconds FROM ApexLog ORDER BY StartTime DESC LIMIT 200";
+    "Request, StartTime, DurationMilliseconds FROM ApexLog" + where +
+    " ORDER BY StartTime DESC LIMIT 200";
   const res = await rawFetch(s, `/services/data/v${s.apiVersion}/tooling/query/?q=${encodeURIComponent(soql)}`);
   return (await res.json()).records || [];
 }
@@ -970,7 +980,7 @@ const server = http.createServer(async (req, res) => {
       return sendJson(res, 200, { text: await sfAnalyze({ enabled, context, logText }) });
     }
     if (p === "/api/diag") return sendJson(res, 200, diagnose());
-    if (p === "/api/logs") return sendJson(res, 200, { records: await listLogs(u.searchParams.get("org")) });
+    if (p === "/api/logs") return sendJson(res, 200, { records: await listLogs(u.searchParams.get("org"), u.searchParams.get("mins")) });
     if (p === "/api/search") return sendJson(res, 200, { matches: await searchLogs(u.searchParams.get("org"), u.searchParams.get("q") || "") });
     if (p === "/api/logbody") {
       const body = await getLogBody(u.searchParams.get("org"), u.searchParams.get("id"));
