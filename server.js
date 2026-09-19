@@ -617,6 +617,203 @@ async function runClaude(system, userContent, cliTail) {
   return analyzeViaCli(system + cliTail, userContent);
 }
 
+// --- Salesforce knowledge search across MCP servers -----------------------
+// The operator's Claude Code install may have Slack / OrgCS / GUS MCP servers
+// connected. When enabled we let `claude -p` call ONLY their read/search tools
+// (allow-listed below — never a write tool) to look up prior art on the errors
+// found in the selected log(s). `listName` is exactly what `claude mcp list`
+// prints for that server so we can read its connection status.
+const SF_MCP = [
+  {
+    key: "orgcs", label: "OrgCS (Salesforce cases/records)", listName: "orgcs",
+    tools: [
+      "mcp__orgcs__soqlQuery", "mcp__orgcs__find", "mcp__orgcs__getRelatedRecords",
+      "mcp__orgcs__getObjectSchema", "mcp__orgcs__getUserInfo", "mcp__orgcs__listRecentSobjectRecords",
+    ],
+    hint: "Search Cases (and related records) for the same/similar errors and note the Case number + how each was resolved.",
+  },
+  {
+    key: "slack", label: "Slack", listName: "slack",
+    tools: [
+      "mcp__slack__slack_search_public", "mcp__slack__slack_search_public_and_private",
+      "mcp__slack__slack_search_channels", "mcp__slack__slack_search_users",
+      "mcp__slack__slack_read_thread", "mcp__slack__slack_read_channel",
+      "mcp__slack__slack_read_user_profile", "mcp__slack__slack_list_user_channels",
+      "mcp__slack__slack_read_canvas", "mcp__slack__slack_read_list", "mcp__slack__slack_get_reactions",
+    ],
+    hint: "Search channels/threads for discussions of the same/similar errors and summarize the resolution reached, with a link to the thread.",
+  },
+  {
+    key: "gus", label: "GUS (work items / bugs)", listName: "plugin:gus:gus_server",
+    tools: [
+      "mcp__plugin_gus_gus_server__query_gus_records",
+      "mcp__plugin_gus_gus_server__query_gus_chatter",
+      "mcp__plugin_gus_gus_server__get_object_description",
+    ],
+    hint: "Search work items / bugs for the same/similar errors. For each relevant work item, ALSO read its Chatter/discussion feed (query_gus_chatter) — the actual root cause, workaround, and fix are usually in the discussion thread, not the work-item fields. Report the work-item number (W-#####), its status, and the resolution/known-issue drawn from BOTH the record AND its discussion.",
+  },
+];
+
+// `claude mcp list` health -> which of the three servers are connected.
+// One probe run of `claude mcp list`, parsed per server.
+function probeMcpOnce() {
+  return new Promise((resolve) => {
+    execFile(resolveClaude(), ["mcp", "list"], { timeout: 60000, maxBuffer: 4 * 1024 * 1024 }, (err, stdout) => {
+      const lines = String(stdout || "").split("\n");
+      const servers = SF_MCP.map((m) => {
+        const line = lines.find((l) => l.trimStart().startsWith(m.listName + ":")) || "";
+        // A connected server prints a check + "Connected"; a failed one prints ✗ / "Failed".
+        const connected = /connected/i.test(line) && !/fail|✗|✘/i.test(line);
+        return { key: m.key, label: m.label, connected };
+      });
+      resolve(servers);
+    });
+  });
+}
+
+let mcpStatusCache = { at: 0, servers: null };
+async function mcpStatus(force = false) {
+  const now = Date.now();
+  // Fully-connected results are stable — cache 30s. A partial/failed probe is
+  // often a transient timeout (the OrgCS HTTP endpoint probes slower than the
+  // others), so cache it only briefly so it self-heals on the next open.
+  if (!force && mcpStatusCache.servers) {
+    const ttl = mcpStatusCache.servers.every((s) => s.connected) ? 30000 : 4000;
+    if (now - mcpStatusCache.at < ttl) return mcpStatusCache.servers;
+  }
+  let servers = await probeMcpOnce();
+  // If anything looks down, probe once more before trusting it — the health
+  // check flakes on slower remote (HTTP) servers, and a false "not connected"
+  // is worse than a small delay.
+  if (!servers.every((s) => s.connected)) {
+    const retry = await probeMcpOnce();
+    // Union: a server counts as connected if EITHER probe saw it connected.
+    servers = servers.map((s) => {
+      const r = retry.find((x) => x.key === s.key);
+      return { ...s, connected: s.connected || (r && r.connected) };
+    });
+  }
+  mcpStatusCache = { at: Date.now(), servers };
+  return servers;
+}
+
+// Run `claude -p` allowing a specific set of (read-only) MCP tools. Longer
+// timeout than a plain analysis because agentic MCP search does several round
+// trips. The error context is piped on stdin.
+function runClaudeWithTools(instruction, stdinText, allowedTools, timeoutMs) {
+  return new Promise((resolve, reject) => {
+    const args = ["-p", instruction, "--model", cliModelArg()];
+    if (allowedTools && allowedTools.length) args.push("--allowedTools", allowedTools.join(","));
+    const child = execFile(
+      resolveClaude(), args,
+      { maxBuffer: 64 * 1024 * 1024, timeout: timeoutMs || 540000 },
+      (err, stdout, stderr) => {
+        if (err) {
+          if (err.code === "ENOENT") return reject(new Error("Claude Code CLI ('claude') not found."));
+          if (err.killed) return reject(new Error("The Salesforce knowledge search timed out. Try fewer logs or fewer MCP servers."));
+          return reject(new Error(String(stderr || err.message || "claude CLI failed").slice(0, 500)));
+        }
+        resolve(String(stdout || "").trim());
+      }
+    );
+    child.stdin.end(stdinText || "");
+  });
+}
+
+// One focused agent PER source. They run in PARALLEL (each allowed ONLY its own
+// source's read tools), so the three searches overlap instead of a single agent
+// hopping between all three servers serially. Each is told to search a few broad
+// angles and then STOP, so no one source runs away with the clock.
+function sfSourceSystem(source, hint) {
+  return (
+`You are a Salesforce support research assistant searching ONE knowledge source: ${source}.
+You are given the errors found in one or more Apex debug logs (on standard input). Find PRIOR ART for those errors in ${source} ONLY.
+
+Your task for this source: ${hint}
+
+Method — broad but FAST:
+- For EACH distinct error run a FEW (about 2-4) broad searches: the exception type alone, key phrases from the message, the failing object/field/DML operation, and the underlying cause — NOT just the verbatim string (exact match misses related work).
+- Judge relevance, keep the strongest matches, then STOP. Do not over-search or chase weak leads.
+- Everything must be READ-ONLY. Never post, create, update, or message anything.
+
+Output COMPACT Markdown findings for THIS source only — no preamble:
+- One bullet per relevant match: the identifier (Case number / GUS work-item number / Slack #channel + date), a one-line summary, and the resolution/outcome if known.
+- For any error with no relevant match: "- No relevant matches for: <error>".
+- Do NOT write an overall summary or a suggested resolution — a later step does that. Never invent identifiers or resolutions; report only what the tools actually returned.`
+  );
+}
+
+// Fast, tool-free consolidation pass. It reads OUR actual log plus the parallel
+// source findings, cross-checks the findings against each other, and then tells
+// us what to fix in OUR scenario — not just what prior cases did.
+const SF_SYNTH_SYSTEM =
+`You are a senior Salesforce support/dev engineer helping fix a LIVE issue. You are given:
+1) The extracted errors and the ACTUAL Apex debug log(s) from the user's own scenario (on standard input, under "OUR SCENARIO").
+2) Research findings gathered IN PARALLEL from up to three knowledge sources (OrgCS cases, Slack discussions, GUS work items) about the same/similar errors, under "PRIOR ART".
+
+Your job is to REVIEW OUR LOG and tell the user concretely what to do to fix THIS issue in THEIR org/code — using the prior art as supporting evidence, not as the answer itself.
+
+First read our log: identify the actual failing point — the exception/fatal line, the Apex class/method/trigger and line, the object/field/DML/SOQL/limit involved, and the likely root cause in THIS scenario.
+
+Cross-check the prior art: when findings from different sources point at the same underlying issue (e.g. a Slack thread names a Case or GUS work item another source also surfaced), link them and treat the corroboration as higher confidence. Note anything that clearly matches — or clearly does NOT match — our scenario.
+
+Output (Markdown):
+- "## What went wrong" — the root cause in our log, in plain terms, citing the specific line/class/method/object from OUR log.
+- "## How to fix it (our scenario)" — concrete, ordered steps for THIS case: what to change (code/config/data), what to check, and any workaround. Be specific to what our log shows, not generic advice.
+- "## Prior art" — the supporting evidence: cite Case numbers, GUS work-item numbers (W-#####), and Slack #channel/threads, each with its resolution. If a discussion had NO case/work-item number, say so and give the resolution reached. If a source found nothing relevant, say so briefly.
+- "## Confidence & caveats" — how sure you are and what to verify.
+Be concrete and factual. Only cite identifiers/resolutions that appear in the findings; never invent them. Ground the fix in what OUR log actually shows.`;
+
+async function sfAnalyze({ enabled, context, logText }) {
+  const keys = Array.isArray(enabled) ? enabled : [];
+  const servers = SF_MCP.filter((m) => keys.includes(m.key));
+  if (!servers.length) throw new Error("Enable at least one connected MCP server (Slack, OrgCS or GUS) for the search.");
+  const ctx = String(context || "").trim();
+  if (!ctx) throw new Error("No errors were extracted from the selected log(s) to research.");
+  // Guard: only allow servers that are actually connected right now.
+  const live = new Set((await mcpStatus()).filter((s) => s.connected).map((s) => s.key));
+  const usable = servers.filter((m) => live.has(m.key));
+  if (!usable.length) throw new Error("None of the enabled MCP servers are currently connected. Authenticate them in Claude Code first.");
+
+  // Fan out: one focused agent per source, all at once. A shorter per-source
+  // timeout means one slow/hung source degrades to a note instead of stalling
+  // the whole run — the others' findings still come back.
+  const PER_SOURCE_TIMEOUT = 240000;
+  const results = await Promise.all(
+    usable.map(async (m) => {
+      const instruction = sfSourceSystem(m.label, m.hint) +
+        "\n\nThe extracted errors / log context to research are on standard input.";
+      try {
+        const text = await runClaudeWithTools(instruction, ctx, m.tools, PER_SOURCE_TIMEOUT);
+        return { label: m.label, text: text || "(no findings returned)", ok: true };
+      } catch (e) {
+        return { label: m.label, text: `(search failed: ${e.message})`, ok: false };
+      }
+    })
+  );
+
+  // Consolidate + cross-check in one fast tool-free pass.
+  const findingsBlock = results
+    .map((r) => `### Findings from ${r.label}\n${r.text}`)
+    .join("\n\n");
+  // Give the synthesis pass OUR actual log (trimmed if large) so it can review
+  // this specific scenario and produce a concrete fix, not just echo prior art.
+  const logRaw = String(logText || "").trim();
+  const { text: ourLog, truncated } = logRaw ? truncateLog(logRaw) : { text: "", truncated: false };
+  const scenario =
+    `Extracted errors:\n${ctx}` +
+    (ourLog ? `\n\nActual Apex debug log(s)${truncated ? " (trimmed — head + tail kept)" : ""}:\n\`\`\`\n${ourLog}\n\`\`\`` : "");
+  const synthInput =
+    `=== OUR SCENARIO ===\n${scenario}\n\n=== PRIOR ART (parallel source findings) ===\n\n${findingsBlock}`;
+  const report = await runClaude(SF_SYNTH_SYSTEM, synthInput, "\n\nOUR SCENARIO (our log + errors) and the PRIOR ART findings are on standard input. Do not use any tools; reason over the provided text.");
+
+  const failed = results.filter((r) => !r.ok).map((r) => r.label);
+  const note = failed.length
+    ? `\n\n---\n_Note: ${failed.join(", ")} did not respond in time; the above reflects the sources that did._`
+    : "";
+  return report + note;
+}
+
 // #9 Compare — two groups of logs (each group may span several logs). The
 // client sends structured digests (full-signal, not truncated) when available;
 // we fall back to raw text for older callers.
@@ -767,6 +964,11 @@ const server = http.createServer(async (req, res) => {
     }
     if (p === "/api/orgs") return sendJson(res, 200, { orgs: await listOrgsForUi(u.searchParams.get("fresh") === "1") });
     if (p === "/api/whoami") return sendJson(res, 200, await whoami(u.searchParams.get("org")));
+    if (p === "/api/mcp-status") return sendJson(res, 200, { servers: await mcpStatus(u.searchParams.get("fresh") === "1") });
+    if (p === "/api/sf-analyze" && req.method === "POST") {
+      const { enabled, context, logText } = await readBody(req);
+      return sendJson(res, 200, { text: await sfAnalyze({ enabled, context, logText }) });
+    }
     if (p === "/api/diag") return sendJson(res, 200, diagnose());
     if (p === "/api/logs") return sendJson(res, 200, { records: await listLogs(u.searchParams.get("org")) });
     if (p === "/api/search") return sendJson(res, 200, { matches: await searchLogs(u.searchParams.get("org"), u.searchParams.get("q") || "") });

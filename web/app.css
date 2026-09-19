@@ -78,6 +78,38 @@ body { display: flex; flex-direction: column; height: 100vh; }
 .model-pick { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 12px; white-space: nowrap; }
 .model-pick select { padding: 5px 8px; }
 
+/* top-right Salesforce (MCP knowledge search) button */
+.sf-btn { background: #0b5cab; border-color: #0b5cab; color: #fff; white-space: nowrap; }
+.sf-btn:hover:not(:disabled) { background: #0a68c4; border-color: #0a68c4; }
+
+/* MCP connections popup */
+.mcp-list { margin: 6px 0 4px; }
+.mcp-row {
+  display: flex; align-items: center; gap: 10px;
+  padding: 10px 4px; border-bottom: 1px solid var(--border);
+}
+.mcp-row:last-child { border-bottom: none; }
+.mcp-info { flex: 1; min-width: 0; }
+.mcp-name { font-weight: 600; }
+.mcp-state { font-size: 11px; margin-top: 2px; }
+.mcp-state.ok { color: var(--green); }
+.mcp-state.no { color: var(--red); }
+/* iOS-style toggle */
+.mcp-toggle { position: relative; width: 40px; height: 22px; flex: 0 0 auto; }
+.mcp-toggle input { position: absolute; opacity: 0; width: 100%; height: 100%; margin: 0; cursor: pointer; }
+.mcp-toggle .track {
+  position: absolute; inset: 0; background: var(--bg-3); border: 1px solid var(--border);
+  border-radius: 12px; transition: background .15s;
+}
+.mcp-toggle .knob {
+  position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%;
+  background: var(--muted); transition: transform .15s, background .15s;
+}
+.mcp-toggle input:checked ~ .track { background: rgba(63,185,80,0.35); border-color: var(--green); }
+.mcp-toggle input:checked ~ .track .knob { transform: translateX(18px); background: var(--green); }
+.mcp-toggle input:disabled { cursor: not-allowed; }
+.mcp-toggle input:disabled ~ .track { opacity: 0.45; }
+
 /* draggable pane dividers */
 .resizer { flex: 0 0 6px; cursor: col-resize; background: var(--border); }
 .resizer:hover, .resizer.active { background: var(--accent); }
