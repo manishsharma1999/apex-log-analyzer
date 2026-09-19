@@ -235,12 +235,16 @@ async function searchLogs(apiHost, q) {
   const found = await mapLimit(logs, 8, async (l) => {
     try {
       const body = await getLogBody(apiHost, l.Id);
-      const idx = body.toLowerCase().indexOf(needle);
+      const lower = body.toLowerCase();
+      const idx = lower.indexOf(needle);
       if (idx < 0) return null;
       const start = Math.max(0, idx - 60);
       const snippet = body.slice(start, idx + q.length + 100).replace(/\s+/g, " ").trim();
-      const count = body.toLowerCase().split(needle).length - 1;
-      return { id: l.Id, snippet: (start > 0 ? "…" : "") + snippet + "…", count };
+      const count = lower.split(needle).length - 1;
+      // 1-based line number of the first hit (matches the viewer's gutter).
+      let line = 1;
+      for (let i = 0; i < idx; i++) if (body.charCodeAt(i) === 10) line++;
+      return { id: l.Id, snippet: (start > 0 ? "…" : "") + snippet + "…", count, line };
     } catch {
       return null;
     }

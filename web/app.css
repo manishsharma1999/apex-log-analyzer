@@ -218,6 +218,14 @@ th.dl, td.dl { width: 26px; text-align: center; padding-left: 0; padding-right: 
 .status-pill.up { background: #2a2140; color: var(--accent-2); }
 .snippet { color: var(--muted); font-size: 11px; font-family: ui-monospace, monospace; padding: 0 10px 7px; border-bottom: 1px solid var(--border); }
 .snippet mark { background: var(--mark); color: #000; }
+/* "Found in line N" pill + a matching hit-count pill on the snippet preview row. */
+.snippet .hit-line, .snippet .hit-count {
+  display: inline-block; vertical-align: middle; white-space: nowrap;
+  padding: 1px 8px; margin-right: 6px; border-radius: 999px;
+  font-family: var(--font, system-ui, sans-serif); font-size: 10px; font-weight: 600; letter-spacing: .2px;
+}
+.snippet .hit-line { color: var(--accent); background: rgba(74,158,255,0.12); border: 1px solid rgba(74,158,255,0.35); }
+.snippet .hit-count { color: var(--muted); background: rgba(154,163,178,0.12); border: 1px solid var(--border); margin-right: 0; margin-left: 4px; }
 
 .table-wrap { flex: 1; overflow: auto; position: relative; }
 .list-pane.dragging { outline: 2px dashed var(--accent); outline-offset: -4px; }
