@@ -96,6 +96,7 @@ body { display: flex; flex-direction: column; height: 100vh; }
   font-size: 12px;
   overflow-wrap: anywhere;
 }
+.current-user .cu-label { opacity: 0.8; font-weight: 500; }
 .current-user .cu-name { font-weight: 700; }
 .current-user .cu-username { color: #ffd9a6; font-weight: 600; }
 .brand { font-weight: 600; font-size: 15px; white-space: nowrap; display: flex; align-items: center; gap: 9px; }
@@ -216,16 +217,28 @@ th.dl, td.dl { width: 26px; text-align: center; padding-left: 0; padding-right: 
 }
 .icon-btn:hover { color: var(--accent); background: var(--bg-3); }
 .status-pill.up { background: #2a2140; color: var(--accent-2); }
-.snippet { color: var(--muted); font-size: 11px; font-family: ui-monospace, monospace; padding: 0 10px 7px; border-bottom: 1px solid var(--border); }
-.snippet mark { background: var(--mark); color: #000; }
-/* "Found in line N" pill + a matching hit-count pill on the snippet preview row. */
-.snippet .hit-line, .snippet .hit-count {
-  display: inline-block; vertical-align: middle; white-space: nowrap;
-  padding: 1px 8px; margin-right: 6px; border-radius: 999px;
-  font-family: var(--font, system-ui, sans-serif); font-size: 10px; font-weight: 600; letter-spacing: .2px;
+/* Search matches strip — part of the same tile as the log row above it (the
+   data row drops its bottom divider via .has-hits, so the two read as one card).
+   Every occurrence is a clickable line pill that jumps to that line. */
+.hits {
+  padding: 2px 12px 8px 46px; border-bottom: 1px solid var(--border);
+  display: flex; flex-wrap: wrap; align-items: center; gap: 6px;
 }
-.snippet .hit-line { color: var(--accent); background: rgba(74,158,255,0.12); border: 1px solid rgba(74,158,255,0.35); }
-.snippet .hit-count { color: var(--muted); background: rgba(154,163,178,0.12); border: 1px solid var(--border); margin-right: 0; margin-left: 4px; }
+tbody tr.has-hits > td { border-bottom: none; }        /* fuse the log row to its matches strip */
+tbody tr.tile-hits { cursor: pointer; }
+.hit-chip {
+  font-family: ui-monospace, monospace; font-size: 11px; font-weight: 500;
+  padding: 1px 9px; border-radius: 999px; border: 1px solid var(--border);
+  background: var(--bg-3); color: var(--text); cursor: pointer; line-height: 1.5;
+}
+.hit-chip:hover:not(:disabled) { border-color: var(--accent); background: #232a36; color: var(--accent); transform: translateY(-1px); }
+.hit-count, .hit-line {
+  display: inline-block; vertical-align: middle; white-space: nowrap;
+  padding: 1px 8px; border-radius: 999px; font-size: 10px; font-weight: 600; letter-spacing: .2px;
+}
+.hit-count { color: var(--muted); background: rgba(154,163,178,0.12); border: 1px solid var(--border); }
+.hit-line { color: var(--accent); background: rgba(74,158,255,0.12); border: 1px solid rgba(74,158,255,0.35); }
+.hit-more { color: var(--muted); font-size: 11px; padding-left: 2px; }
 
 .table-wrap { flex: 1; overflow: auto; position: relative; }
 .list-pane.dragging { outline: 2px dashed var(--accent); outline-offset: -4px; }
