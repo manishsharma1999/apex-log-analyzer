@@ -69,6 +69,22 @@ else
   note "Setup complete — starting."
 fi
 
+# Pin THIS app to the Dock on first run, so the icon people click is the one
+# that actually starts the server — not a Chrome "install as app" shortcut that
+# only opens http://localhost:8787 and shows "connection refused". Done once:
+# a flag file means we never re-add it if you later remove it from the Dock.
+PINNED_FLAG="$SUPPORT/.dock-pinned"
+APP_BUNDLE="$(cd "$HERE/../.." && pwd)"                   # .../Apex Log Analyzer.app
+if [ ! -f "$PINNED_FLAG" ]; then
+  ENC_URL="file://${APP_BUNDLE// /%20}/"                  # Dock stores a percent-encoded file URL
+  if ! defaults read com.apple.dock persistent-apps 2>/dev/null | grep -qe "com.local.apex-log-analyzer" -e "$ENC_URL"; then
+    defaults write com.apple.dock persistent-apps -array-add \
+      "<dict><key>tile-data</key><dict><key>file-data</key><dict><key>_CFURLString</key><string>$ENC_URL</string><key>_CFURLStringType</key><integer>15</integer></dict><key>file-label</key><string>Apex Log Analyzer</string></dict></dict>" 2>>"$LOG" \
+      && killall Dock 2>/dev/null || true
+  fi
+  touch "$PINNED_FLAG" 2>/dev/null || true
+fi
+
 # Runs in the foreground of this app process, so quitting the app stops the
 # server. server.js opens the browser itself. All output goes to the log.
 exec "$NODE" "$APPDIR/server.js" >>"$LOG" 2>&1

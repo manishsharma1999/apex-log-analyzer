@@ -78,6 +78,10 @@ configuration. Stop it with `Ctrl-C` (or quit the app).
 Build it from source with `./build-app.sh` (→ `dist/Apex Log Analyzer.app` +
 `~/Apex Log Analyzer.zip`), then double-click the app — no Terminal window.
 
+On its **first launch** the app pins itself to your Dock, so the icon you click
+from then on is the one that actually starts the server. (It does this only
+once — if you later drag it off the Dock, it won't put itself back.)
+
 > **Gatekeeper note:** the `.app` is unsigned, so a **downloaded** copy may show
 > *"Apple could not verify … is free of malware."* Click **Done**, then open
 > **System Settings → Privacy & Security**, scroll down, and click **"Open
