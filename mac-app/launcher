@@ -21,14 +21,43 @@ MIN_MINOR=13
 # (server.js also probes these, but a good PATH lets `node`/`claude` be found).
 export PATH="/usr/local/bin:/opt/homebrew/bin:$HOME/.local/bin:$HOME/.claude/local:$HOME/.npm-global/bin:$HOME/bin:/usr/bin:/bin:$PATH"
 
-note() { /usr/bin/osascript -e "display notification \"$1\" with title \"Apex Log Analyzer\"" >/dev/null 2>&1 || true; }
-fail() { /usr/bin/osascript -e "display dialog \"$1\" with title \"Apex Log Analyzer\" buttons {\"OK\"} default button 1 with icon caution" >/dev/null 2>&1 || true; exit 1; }
+# Message text is passed to AppleScript via `argv`, NOT interpolated into the
+# script source, so a message containing " or \ (e.g. a home-dir path in $LOG)
+# can't break out of the string literal or inject AppleScript.
+note() { /usr/bin/osascript -e 'on run argv' -e 'display notification (item 1 of argv) with title "Apex Log Analyzer"' -e 'end run' -- "$1" >/dev/null 2>&1 || true; }
+fail() { /usr/bin/osascript -e 'on run argv' -e 'display dialog (item 1 of argv) with title "Apex Log Analyzer" buttons {"OK"} default button 1 with icon caution' -e 'end run' -- "$1" >/dev/null 2>&1 || true; exit 1; }
+
+# Yes/No prompt (message via argv, same injection-safety as above). Returns 0
+# for Yes, non-zero for No / cancel.
+ask_yes_no() {
+  local answer
+  answer="$(/usr/bin/osascript -e 'on run argv' -e 'button returned of (display dialog (item 1 of argv) with title "Apex Log Analyzer" buttons {"No","Yes"} default button "Yes")' -e 'end run' -- "$1" 2>/dev/null)" || return 1
+  [ "$answer" = "Yes" ]
+}
+
+# Percent-encode a filesystem path for a _CFURLString (Dock plist). Encodes
+# every reserved/XML-significant char (space, & < > " ' …) so the path can never
+# corrupt or inject the plist XML fragment; keeps "/" as the path separator.
+urlencode() {
+  local s="$1" i c out=""
+  for (( i=0; i<${#s}; i++ )); do
+    c="${s:i:1}"
+    case "$c" in
+      [a-zA-Z0-9._~/-]) out+="$c" ;;
+      *) out+="$(printf '%%%02X' "'$c")" ;;
+    esac
+  done
+  printf '%s' "$out"
+}
 
 node_ok() {
   local n="$1"
   command -v "$n" >/dev/null 2>&1 || [ -x "$n" ] || return 1
   local v; v="$("$n" -v 2>/dev/null | sed 's/^v//')" || return 1
-  local maj="${v%%.*}"; local rest="${v#*.}"; local min="${rest%%.*}"
+  # A dot-less version (e.g. "22") has no minor: treat minor as 0 so it can't
+  # spuriously satisfy the 22.13 floor.
+  local maj="${v%%.*}" min
+  case "$v" in *.*) local rest="${v#*.}"; min="${rest%%.*}" ;; *) min=0 ;; esac
   [ "${maj:-0}" -gt "$MIN_MAJOR" ] && return 0
   [ "${maj:-0}" -eq "$MIN_MAJOR" ] && [ "${min:-0}" -ge "$MIN_MINOR" ] && return 0
   return 1
@@ -46,9 +75,12 @@ else
     x86_64) NARCH="x64" ;;
     *)      NARCH="x64" ;;
   esac
-  BASE="https://nodejs.org/dist/latest-v24.x"
-  FILE="$(curl -fsSL "$BASE/" 2>>"$LOG" | grep -oE "node-v24[0-9.]+-darwin-$NARCH\.tar\.gz" | head -1)" || true
-  [ -z "$FILE" ] && fail "Could not reach the Node download. Install Node 24 from nodejs.org, then reopen."
+  # Pinned Node version — the verified artifact is stable across time (a floating
+  # "latest-v24.x" would silently change what we checksum). Bump deliberately.
+  # (Future hardening: also verify SHASUMS256.txt.sig with Node's GPG keys.)
+  NODE_VERSION="v24.21.0"
+  BASE="https://nodejs.org/dist/${NODE_VERSION}"
+  FILE="node-${NODE_VERSION}-darwin-${NARCH}.tar.gz"
   # Verify the download against Node's published SHA-256 before executing it, so a
   # tampered/MITM'd tarball can't run as code on this machine.
   EXPECTED="$(curl -fsSL "$BASE/SHASUMS256.txt" 2>>"$LOG" | awk -v f="$FILE" '$2==f {print $1}' | head -1)" || true
@@ -69,18 +101,23 @@ else
   note "Setup complete — starting."
 fi
 
-# Pin THIS app to the Dock on first run, so the icon people click is the one
-# that actually starts the server — not a Chrome "install as app" shortcut that
-# only opens http://localhost:8787 and shows "connection refused". Done once:
-# a flag file means we never re-add it if you later remove it from the Dock.
+# Offer to pin THIS app to the Dock on first run, so the icon people click is the
+# one that actually starts the server — not a Chrome "install as app" shortcut
+# that only opens http://localhost:8787 and shows "connection refused". Asked at
+# most once (a flag file records that we asked, regardless of the answer) and
+# only pins with the user's consent — we never rewrite the Dock silently.
 PINNED_FLAG="$SUPPORT/.dock-pinned"
 APP_BUNDLE="$(cd "$HERE/../.." && pwd)"                   # .../Apex Log Analyzer.app
 if [ ! -f "$PINNED_FLAG" ]; then
-  ENC_URL="file://${APP_BUNDLE// /%20}/"                  # Dock stores a percent-encoded file URL
-  if ! defaults read com.apple.dock persistent-apps 2>/dev/null | grep -qe "com.local.apex-log-analyzer" -e "$ENC_URL"; then
-    defaults write com.apple.dock persistent-apps -array-add \
-      "<dict><key>tile-data</key><dict><key>file-data</key><dict><key>_CFURLString</key><string>$ENC_URL</string><key>_CFURLStringType</key><integer>15</integer></dict><key>file-label</key><string>Apex Log Analyzer</string></dict></dict>" 2>>"$LOG" \
-      && killall Dock 2>/dev/null || true
+  ENC_URL="file://$(urlencode "$APP_BUNDLE")/"            # fully %-encoded file URL (see urlencode)
+  # -F: match the URL as a fixed string, not a regex (path metachars like "." must not match).
+  if ! defaults read com.apple.dock persistent-apps 2>/dev/null | grep -qF -e "com.local.apex-log-analyzer" -e "$ENC_URL"; then
+    if ask_yes_no "Add Apex Log Analyzer to your Dock? (so the icon you click is the one that starts the app)"; then
+      if defaults write com.apple.dock persistent-apps -array-add \
+        "<dict><key>tile-data</key><dict><key>file-data</key><dict><key>_CFURLString</key><string>$ENC_URL</string><key>_CFURLStringType</key><integer>15</integer></dict><key>file-label</key><string>Apex Log Analyzer</string></dict></dict>" 2>>"$LOG"; then
+        killall Dock 2>/dev/null || true                 # only restart Dock if a pin was actually added
+      fi
+    fi
   fi
   touch "$PINNED_FLAG" 2>/dev/null || true
 fi

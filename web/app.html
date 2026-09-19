@@ -3,19 +3,15 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- Strict CSP: only same-origin scripts (no inline JS — the two theme
+         scripts are externalized), inline CSS is still allowed for the app's
+         dynamic style attributes, images allow data: URIs, and network is
+         confined to same-origin (the local Node server). -->
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'" />
     <title>Apex Log Analyzer</title>
     <link rel="icon" type="image/png" href="logo.png" />
     <link rel="stylesheet" href="app.css" />
-    <script>
-      // Apply the saved color theme before first paint to avoid a flash.
-      (function () {
-        try {
-          var saved = localStorage.getItem("ala-theme");
-          var theme = saved || (window.matchMedia && window.matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark");
-          if (theme === "light") document.documentElement.setAttribute("data-theme", "light");
-        } catch (e) {}
-      })();
-    </script>
+    <script src="theme-init.js"></script>
   </head>
   <body>
     <div class="use-banner" role="alert">
@@ -171,29 +167,6 @@
 
     <script src="model.js"></script>
     <script src="app.js"></script>
-    <script>
-      // Light/dark toggle — presentation only, independent of app.js.
-      (function () {
-        var btn = document.getElementById("themeToggle");
-        if (!btn) return;
-        function sync() {
-          var light = document.documentElement.getAttribute("data-theme") === "light";
-          btn.textContent = light ? "☀️" : "🌙";
-          btn.title = light ? "Switch to dark theme" : "Switch to light theme";
-        }
-        btn.addEventListener("click", function () {
-          var light = document.documentElement.getAttribute("data-theme") === "light";
-          if (light) {
-            document.documentElement.removeAttribute("data-theme");
-            try { localStorage.setItem("ala-theme", "dark"); } catch (e) {}
-          } else {
-            document.documentElement.setAttribute("data-theme", "light");
-            try { localStorage.setItem("ala-theme", "light"); } catch (e) {}
-          }
-          sync();
-        });
-        sync();
-      })();
-    </script>
+    <script src="theme-toggle.js"></script>
   </body>
 </html>

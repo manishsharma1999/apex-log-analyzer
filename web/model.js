@@ -129,7 +129,7 @@
         const label = lim[1].trim(), used = +lim[2], max = +lim[3];
         const prev = limitAgg.get(label);
         if (!prev || used > prev.used) limitAgg.set(label, { label, used, max });
-        if (!limitByNs.has(curNs)) limitByNs.set(curNs, {});
+        if (!limitByNs.has(curNs)) limitByNs.set(curNs, Object.create(null));
         const b = limitByNs.get(curNs);
         if (!b[label] || used > b[label].used) b[label] = { used, max };
         continue;
@@ -181,7 +181,9 @@
           const q = truncate(parts.slice(4).join("|").trim(), MAX_QUERY_LEN);
           pendingSoql.push({ q, ns, li, lineRef });
         } else if (ev === "DML_BEGIN") {
-          const f = {};
+          // Null-proto so a log field literally named "Op"/"Type"/"Rows" (or
+          // "__proto__") can't collide with Object.prototype keys.
+          const f = Object.create(null);
           for (let i = 3; i < parts.length; i++) {
             const kv = parts[i].split(":");
             if (kv.length >= 2) f[kv[0].trim()] = kv.slice(1).join(":").trim();

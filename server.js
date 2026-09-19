@@ -3,8 +3,9 @@
 //
 // Reads the Salesforce session straight from Chrome's cookie store (see
 // chrome-session.js), so whatever org you're logged into in Chrome just shows
-// up. Auto-enables debug logging and auto-polls for new logs. All Salesforce +
-// Claude calls happen here (server-side): no extension, no CORS.
+// up. Auto-polls for new logs (it never creates/enables trace flags — you
+// manage debug logging yourself in Setup). All Salesforce + Claude calls happen
+// here (server-side): no extension, no CORS. Every Salesforce call is a GET.
 //
 //     node server.js   ->   open http://localhost:8787
 
@@ -37,7 +38,12 @@ const DEFAULT_API_VERSION = "61.0";
 function loadSettings() {
   try { return JSON.parse(fs.readFileSync(SETTINGS_PATH, "utf8")); } catch { return {}; }
 }
-function saveSettings(s) { fs.writeFileSync(SETTINGS_PATH, JSON.stringify(s, null, 2), { mode: 0o600 }); }
+function saveSettings(s) {
+  // mode:0o600 only applies when the file is *created* — reapply on every write
+  // so an already-existing (possibly looser-permissioned) file gets locked down.
+  fs.writeFileSync(SETTINGS_PATH, JSON.stringify(s, null, 2), { mode: 0o600 });
+  try { fs.chmodSync(SETTINGS_PATH, 0o600); } catch { /* best effort */ }
+}
 function getApiKey() { return process.env.ANTHROPIC_API_KEY || loadSettings().apiKey || ""; }
 function getModel() { return loadSettings().model || "claude-sonnet-5"; }
 
@@ -93,11 +99,14 @@ async function getSession(apiHost) {
   return s;
 }
 
+const SF_FETCH_TIMEOUT_MS = 30000;
 async function rawFetch(session, urlPath, opts = {}) {
   const url = urlPath.startsWith("http") ? urlPath : session.instanceUrl + urlPath;
   traceHttp(opts.method, url);
   const res = await fetch(url, {
     ...opts,
+    // Don't let a hung Salesforce connection hang the browser request forever.
+    signal: opts.signal || AbortSignal.timeout(SF_FETCH_TIMEOUT_MS),
     headers: {
       Authorization: `Bearer ${session.sessionId}`,
       Accept: opts.accept || "application/json",
@@ -175,7 +184,12 @@ async function listLogs(apiHost, mins) {
   return (await res.json()).records || [];
 }
 
-const bodyCache = new Map(); // apiHost:id -> text (log bodies are immutable)
+// apiHost:id -> text (log bodies are immutable). Bounded by total bytes, not
+// entry count: a few very large logs shouldn't be allowed to grow memory the way
+// a fixed 500-entry cap would. Oldest entries are evicted first (FIFO).
+const bodyCache = new Map();
+let bodyCacheBytes = 0;
+const BODY_CACHE_MAX_BYTES = 128 * 1024 * 1024; // ~128 MB
 async function getLogBody(apiHost, id) {
   // id goes straight into the Salesforce REST path — pin it to a real 15/18-char
   // Salesforce record id so a crafted value can't reshape the request path.
@@ -186,7 +200,12 @@ async function getLogBody(apiHost, id) {
   const res = await rawFetch(s, `/services/data/v${s.apiVersion}/tooling/sobjects/ApexLog/${id}/Body`, { accept: "text/plain" });
   const text = await res.text();
   bodyCache.set(cacheKey, text);
-  if (bodyCache.size > 500) bodyCache.delete(bodyCache.keys().next().value);
+  bodyCacheBytes += text.length;
+  while (bodyCacheBytes > BODY_CACHE_MAX_BYTES && bodyCache.size > 1) {
+    const oldestKey = bodyCache.keys().next().value;
+    bodyCacheBytes -= (bodyCache.get(oldestKey) || "").length;
+    bodyCache.delete(oldestKey);
+  }
   return text;
 }
 
@@ -918,17 +937,35 @@ async function onSave({ apiHost, sobject }) {
 
 // --- HTTP -----------------------------------------------------------------
 function sendJson(res, code, obj) { const s = JSON.stringify(obj); res.writeHead(code, { "Content-Type": "application/json" }); res.end(s); }
+// Cap request bodies so a runaway/oversized POST can't grow memory without
+// bound. Generous enough for multi-log "analyze selected" uploads, but finite.
+const MAX_BODY_BYTES = 64 * 1024 * 1024; // 64 MB
 function readBody(req) {
-  return new Promise((resolve) => {
-    let data = ""; req.on("data", (c) => (data += c));
-    req.on("end", () => { try { resolve(data ? JSON.parse(data) : {}); } catch { resolve({}); } });
+  return new Promise((resolve, reject) => {
+    let data = ""; let bytes = 0; let aborted = false;
+    req.on("data", (c) => {
+      if (aborted) return;
+      bytes += c.length;
+      if (bytes > MAX_BODY_BYTES) {
+        aborted = true;
+        req.destroy();
+        return reject(new Error("Request body too large."));
+      }
+      data += c;
+    });
+    req.on("end", () => { if (aborted) return; try { resolve(data ? JSON.parse(data) : {}); } catch { resolve({}); } });
+    req.on("error", (e) => { if (!aborted) reject(e); });
   });
 }
 const MIME = { ".html": "text/html", ".css": "text/css", ".js": "text/javascript" };
 function serveStatic(res, urlPath) {
   const file = urlPath === "/" ? "app.html" : urlPath.replace(/^\//, "");
   const full = path.join(WEB_DIR, file);
-  if (!full.startsWith(WEB_DIR) || !fs.existsSync(full)) { res.writeHead(404); return res.end("Not found"); }
+  // Confine to WEB_DIR. Compare with a trailing separator so a sibling like
+  // "web-secret" can't satisfy a bare startsWith("…/web") prefix check.
+  if ((full !== WEB_DIR && !full.startsWith(WEB_DIR + path.sep)) || !fs.existsSync(full)) {
+    res.writeHead(404); return res.end("Not found");
+  }
   // Local dev tool: never let the browser serve a stale app.css / app.js / app.html,
   // so edits show up on a normal reload (no Cmd+Shift+R needed).
   res.writeHead(200, {
@@ -939,11 +976,14 @@ function serveStatic(res, urlPath) {
 }
 
 // The server binds to loopback, but a browser can still reach it from ANY page
-// the user visits. Two guards close that off:
+// the user visits. Three guards close that off:
 //  - Host must be a loopback literal — defeats DNS-rebinding (an attacker domain
 //    that rebinds to 127.0.0.1 still sends its own name in the Host header).
 //  - Origin (when present) must be loopback too — defeats cross-site fetch/CSRF
 //    from a normal malicious page (which sends its real Origin).
+//  - Sec-Fetch-Site (sent by all modern browsers, unspoofable by JS) must not be
+//    "cross-site"/"same-site" — this also blocks Origin-less cross-site loads
+//    like <img src>, <script src> and form posts that the Origin check misses.
 // Same-origin navigations and the app's own relative fetches pass cleanly.
 function isLoopbackName(name) {
   const n = String(name || "").toLowerCase().replace(/^\[|\]$/g, "");
@@ -956,6 +996,10 @@ function requestIsLocal(req) {
   if (origin) {
     try { if (!isLoopbackName(new URL(origin).hostname)) return false; } catch { return false; }
   }
+  // "same-origin" and "none" (a top-level navigation the user typed) are fine;
+  // "cross-site"/"same-site" mean another site initiated the request — reject.
+  const site = req.headers["sec-fetch-site"];
+  if (site && site !== "same-origin" && site !== "none") return false;
   return true;
 }
 
@@ -1036,9 +1080,12 @@ const server = http.createServer(async (req, res) => {
 // --- startup --------------------------------------------------------------
 // node:sqlite (used by chrome-session.js) needs a recent Node. Fail early with
 // a clear message instead of a cryptic require error mid-run.
-const NODE_MAJOR = Number(process.versions.node.split(".")[0]);
-if (NODE_MAJOR < 22) {
-  console.error(`\n  Apex Log Analyzer needs Node.js 22 or newer (you have ${process.version}).`);
+// node:sqlite is only usable unflagged on Node 22.13+ (or 24+). Check against
+// that exact floor — a coarse "major < 22" gate would wave through 22.0–22.12,
+// which then fail later with a cryptic node:sqlite error.
+const [NODE_MAJOR, NODE_MINOR] = process.versions.node.split(".").map(Number);
+if (NODE_MAJOR < 22 || (NODE_MAJOR === 22 && (NODE_MINOR || 0) < 13)) {
+  console.error(`\n  Apex Log Analyzer needs Node.js 22.13 or newer (you have ${process.version}).`);
   console.error(`  Install the latest Node from https://nodejs.org and try again.\n`);
   process.exit(1);
 }

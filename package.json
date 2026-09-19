@@ -10,7 +10,7 @@
     "start": "node server.js"
   },
   "engines": {
-    "node": ">=22"
+    "node": ">=22.13"
   },
   "os": [
     "darwin"

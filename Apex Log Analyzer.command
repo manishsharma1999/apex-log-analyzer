@@ -17,7 +17,10 @@ node_ok() {
   local n="$1"
   command -v "$n" >/dev/null 2>&1 || [ -x "$n" ] || return 1
   local v; v="$("$n" -v 2>/dev/null | sed 's/^v//')" || return 1
-  local maj="${v%%.*}"; local rest="${v#*.}"; local min="${rest%%.*}"
+  # A dot-less version (e.g. "22") has no minor: treat minor as 0 so it can't
+  # spuriously satisfy the 22.13 floor.
+  local maj="${v%%.*}" min
+  case "$v" in *.*) local rest="${v#*.}"; min="${rest%%.*}" ;; *) min=0 ;; esac
   [ "${maj:-0}" -gt "$MIN_MAJOR" ] && return 0
   [ "${maj:-0}" -eq "$MIN_MAJOR" ] && [ "${min:-0}" -ge "$MIN_MINOR" ] && return 0
   return 1
@@ -35,12 +38,12 @@ else
     x86_64) NARCH="x64" ;;
     *)      NARCH="x64" ;;
   esac
-  BASE="https://nodejs.org/dist/latest-v24.x"
-  FILE="$(curl -fsSL "$BASE/" | grep -oE "node-v24[0-9.]+-darwin-$NARCH\.tar\.gz" | head -1)"
-  if [ -z "$FILE" ]; then
-    echo "Could not find a Node download. Please install Node 24 from https://nodejs.org and try again."
-    read -r -p "Press Return to close." _; exit 1
-  fi
+  # Pinned Node version — the verified artifact is stable across time (a floating
+  # "latest-v24.x" would silently change what we checksum). Bump deliberately.
+  # (Future hardening: also verify SHASUMS256.txt.sig with Node's GPG keys.)
+  NODE_VERSION="v24.21.0"
+  BASE="https://nodejs.org/dist/${NODE_VERSION}"
+  FILE="node-${NODE_VERSION}-darwin-${NARCH}.tar.gz"
   # Verify the tarball against Node's published SHA-256 before executing it.
   EXPECTED="$(curl -fsSL "$BASE/SHASUMS256.txt" | awk -v f="$FILE" '$2==f {print $1}' | head -1)"
   if [ -z "$EXPECTED" ]; then
