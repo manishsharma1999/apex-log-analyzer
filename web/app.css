@@ -191,15 +191,17 @@ button.primary:hover:not(:disabled) { filter: brightness(1.08); box-shadow: 0 4p
   border-bottom: 1px solid var(--border);
 }
 .list-header input { flex: 1; }
-/* Top row is split in two: search on the left half, time-window fetch on the right. */
-.search-wrap { flex: 1 1 50%; display: flex; align-items: center; gap: 8px; min-width: 0; }
-.fetch-wrap { flex: 1 1 50%; display: flex; align-items: center; justify-content: flex-end; gap: 8px; min-width: 0; }
+/* Search gets its own full-width row; the acquisition controls (fetch window,
+   fetch buttons, auto-refresh, upload) live together on the row below it. */
+.search-row { border-bottom: none; padding-bottom: 4px; }
+.list-header.controls { border-top: none; padding-top: 4px; flex-wrap: wrap; }
+.list-header.controls button { flex: 0 0 auto; white-space: nowrap; }
 .fetch-label { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 13px; white-space: nowrap; }
 .fetch-label input { flex: 0 0 auto; width: 56px; text-align: center; -moz-appearance: textfield; appearance: textfield; }
 /* No up/down spinner — plain typeable number field. */
 .fetch-label input::-webkit-outer-spin-button,
 .fetch-label input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
-.fetch-wrap #fetchBtn { flex: 0 0 auto; white-space: nowrap; }
+.ctl-sep { flex: 0 0 auto; width: 1px; height: 20px; background: var(--border); margin: 0 3px; }
 .list-header.sub { border-top: none; padding-top: 0; }
 .list-header.sub input { border-color: var(--accent-2); }
 .bulkbar { background: #14293f; padding: 8px; }

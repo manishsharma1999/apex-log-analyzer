@@ -22,11 +22,9 @@
         <label class="org-pick" title="Choose the Salesforce org (from your Chrome session)">Org
           <select id="orgSelect"></select>
         </label>
-        <button id="autoBtn" title="Auto-refresh the log list every few seconds (does not create trace flags — manage debug logging yourself in Setup)" class="on">● Auto-refresh: ON</button>
-        <button id="uploadBtn" title="Upload one or more .log files">⬆ Upload .log</button>
-        <input id="fileInput" type="file" accept=".log,.txt,text/plain" multiple hidden />
-        <button id="onSaveBtn" title="See what automation fires when an object is saved (order of execution)">🔀 On Save</button>
         <span class="spacer"></span>
+        <button id="onSaveBtn" title="See what automation fires when an object is saved (order of execution)">🔀 On Save</button>
+        <button id="sfBtn" class="sf-btn" title="Search Slack / OrgCS / GUS for prior art on the errors in the selected log(s)">☁ Salesforce</button>
         <label class="model-pick" title="Claude model used for analysis">Model
           <select id="modelSelect">
             <option value="claude-sonnet-5">Sonnet 5 (balanced)</option>
@@ -34,7 +32,6 @@
             <option value="claude-haiku-4-5-20251001">Haiku 4.5 (fastest)</option>
           </select>
         </label>
-        <button id="sfBtn" class="sf-btn" title="Search Slack / OrgCS / GUS for prior art on the errors in the selected log(s)">☁ Salesforce</button>
       </div>
     </header>
 
@@ -42,20 +39,23 @@
 
     <main class="layout">
       <section class="pane list-pane" id="listPane">
-        <div class="list-header">
-          <div class="search-wrap">
-            <input id="search" type="search" placeholder="🔎 Search all logs — user, operation, status, or any text inside…" />
-            <span id="matchInfo" class="count"></span>
-            <span id="searchInfo" class="count"></span>
-            <span id="logCount" class="count"></span>
-          </div>
-          <div class="fetch-wrap">
-            <label class="fetch-label" title="Only fetch logs created in the last N minutes — keeps you from pulling the whole org">Last
-              <input id="windowMin" type="number" min="1" step="1" value="2" inputmode="numeric" title="Time window in minutes" /> min
-            </label>
-            <button id="fetchBtn" class="primary" title="Fetch logs from the selected org for this time window">↻ Fetch logs</button>
-            <button id="fetchAllBtn" title="Fetch every log from the org, ignoring the time window">Fetch all</button>
-          </div>
+        <div class="list-header search-row">
+          <input id="search" type="search" placeholder="🔎 Search all logs — user, operation, status, or any text inside…" />
+          <span id="matchInfo" class="count"></span>
+          <span id="searchInfo" class="count"></span>
+          <span id="logCount" class="count"></span>
+        </div>
+        <div class="list-header controls">
+          <label class="fetch-label" title="Only fetch logs created in the last N minutes — keeps you from pulling the whole org">Last
+            <input id="windowMin" type="number" min="1" step="1" value="2" inputmode="numeric" title="Time window in minutes" /> min
+          </label>
+          <button id="fetchBtn" class="primary" title="Fetch logs from the selected org for this time window">↻ Fetch logs</button>
+          <button id="fetchAllBtn" title="Fetch every log from the org, ignoring the time window">Fetch all</button>
+          <span class="ctl-sep"></span>
+          <button id="autoBtn" title="Auto-refresh the log list every few seconds (does not create trace flags — manage debug logging yourself in Setup)" class="on">● Auto-refresh: ON</button>
+          <span class="spacer"></span>
+          <button id="uploadBtn" title="Upload one or more .log files">⬆ Upload .log</button>
+          <input id="fileInput" type="file" accept=".log,.txt,text/plain" multiple hidden />
         </div>
         <div class="list-header sub bulkbar hidden" id="bulkBar">
           <span id="selCount" class="count"></span>
