@@ -237,6 +237,10 @@ tbody tr.preview-head > td { padding: 3px 12px 1px 46px; border-bottom: none; }
 tbody tr.preview-row { cursor: pointer; }
 tbody tr.preview-row > td { padding: 2px 12px 2px 46px; border-bottom: none; }
 tbody tr.preview-row:hover > td { background: #1b212c; }
+/* The specific preview row the user last clicked stays highlighted (with an accent
+   bar), so it's clear which occurrence the viewer on the right is showing. */
+tbody tr.preview-row.pv-active > td { background: #1a2740; box-shadow: inset 3px 0 0 var(--accent); }
+tbody tr.preview-row.pv-active .pv-text { color: var(--text); }
 tbody tr.tile-end > td { border-bottom: 1px solid var(--border); }   /* close off the tile */
 .pv-inner { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .pv-line {
