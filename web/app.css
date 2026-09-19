@@ -217,28 +217,40 @@ th.dl, td.dl { width: 26px; text-align: center; padding-left: 0; padding-right: 
 }
 .icon-btn:hover { color: var(--accent); background: var(--bg-3); }
 .status-pill.up { background: #2a2140; color: var(--accent-2); }
-/* Search matches strip — part of the same tile as the log row above it (the
-   data row drops its bottom divider via .has-hits, so the two read as one card).
-   Every occurrence is a clickable line pill that jumps to that line. */
-.hits {
-  padding: 2px 12px 8px 46px; border-bottom: 1px solid var(--border);
-  display: flex; flex-wrap: wrap; align-items: center; gap: 6px;
-}
-tbody tr.has-hits > td { border-bottom: none; }        /* fuse the log row to its matches strip */
-tbody tr.tile-hits { cursor: pointer; }
-.hit-chip {
-  font-family: ui-monospace, monospace; font-size: 11px; font-weight: 500;
-  padding: 1px 9px; border-radius: 999px; border: 1px solid var(--border);
-  background: var(--bg-3); color: var(--text); cursor: pointer; line-height: 1.5;
-}
-.hit-chip:hover:not(:disabled) { border-color: var(--accent); background: #232a36; color: var(--accent); transform: translateY(-1px); }
-.hit-count, .hit-line {
+/* One tile per matched log: the label row (log metadata) plus a strip of
+   search-result preview rows below it, all reading as a single card. The label
+   row is NOT clickable when it has hits — you navigate via the preview rows. */
+.tile-main.has-hits { cursor: default; }
+.tile-main.clickable { cursor: pointer; }
+tbody tr.tile-main.has-hits > td { border-bottom: none; }   /* fuse label row to its previews */
+
+/* Header inside a tile: the "N hits" count. */
+tbody tr.preview-head { cursor: default; }
+tbody tr.preview-head > td { padding: 3px 12px 1px 46px; border-bottom: none; }
+.hit-count {
   display: inline-block; vertical-align: middle; white-space: nowrap;
   padding: 1px 8px; border-radius: 999px; font-size: 10px; font-weight: 600; letter-spacing: .2px;
+  color: var(--muted); background: rgba(154,163,178,0.12); border: 1px solid var(--border);
 }
-.hit-count { color: var(--muted); background: rgba(154,163,178,0.12); border: 1px solid var(--border); }
-.hit-line { color: var(--accent); background: rgba(74,158,255,0.12); border: 1px solid rgba(74,158,255,0.35); }
-.hit-more { color: var(--muted); font-size: 11px; padding-left: 2px; }
+
+/* Each occurrence is its own full-width clickable preview row. */
+tbody tr.preview-row { cursor: pointer; }
+tbody tr.preview-row > td { padding: 2px 12px 2px 46px; border-bottom: none; }
+tbody tr.preview-row:hover > td { background: #1b212c; }
+tbody tr.tile-end > td { border-bottom: 1px solid var(--border); }   /* close off the tile */
+.pv-inner { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.pv-line {
+  flex: 0 0 auto; font-family: ui-monospace, monospace; font-size: 10px; font-weight: 600;
+  padding: 1px 8px; border-radius: 999px; white-space: nowrap;
+  color: var(--accent); background: rgba(74,158,255,0.12); border: 1px solid rgba(74,158,255,0.35);
+}
+.pv-text {
+  flex: 1 1 auto; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  font-family: ui-monospace, monospace; font-size: 11px; color: var(--muted);
+}
+.pv-text mark { background: var(--mark); color: #000; border-radius: 2px; padding: 0 1px; }
+.preview-row:hover .pv-text { color: var(--text); }
+.pv-more { color: var(--muted); font-size: 11px; font-style: italic; }
 
 .table-wrap { flex: 1; overflow: auto; position: relative; }
 .list-pane.dragging { outline: 2px dashed var(--accent); outline-offset: -4px; }
