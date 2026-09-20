@@ -100,6 +100,181 @@ body { display: flex; flex-direction: column; height: 100vh; }
 .current-user .cu-label { opacity: 0.8; font-weight: 500; }
 .current-user .cu-name { font-weight: 700; }
 .current-user .cu-username { color: #ffd9a6; font-weight: 600; }
+/* Tiny inline copy-username icon — transparent, matches the banner text. All
+   states are pinned here so the global button chrome (hover bg, focus glow,
+   lift) never turns it into a big box. */
+.current-user .cu-copy {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 16px; height: 16px; padding: 0; margin-left: 2px;
+  background: transparent; border: 0; border-radius: 4px;
+  color: #ffd9a6; cursor: pointer; opacity: 0.7; flex: 0 0 auto;
+  box-shadow: none;
+  transition: opacity var(--t-fast), background var(--t-fast), color var(--t-fast);
+}
+.current-user .cu-copy svg { width: 11px; height: 11px; }
+/* Scoped to .use-banner so specificity (0,5,0) beats the light-theme global
+   `:root[data-theme="light"] button:hover` (0,4,1) that was painting a pale box.
+   Keep the icon transparent in every state — hover just brightens the glyph. */
+.use-banner .current-user .cu-copy:hover:not(:disabled),
+.use-banner .current-user .cu-copy:focus,
+.use-banner .current-user .cu-copy:focus-visible,
+.use-banner .current-user .cu-copy:active:not(:disabled) {
+  opacity: 1; background: transparent;
+  border: 0; box-shadow: none; outline: none; transform: none;
+}
+.current-user .cu-copy.copied { color: #7ee787; opacity: 1; background: transparent; }
+
+/* Small "NEW" badge on a freshly-captured log row. Sits inline just after the
+   timestamp — in the existing gap before the User column — so the row number
+   and column layout stay exactly as they are. Moves onto the latest batch and
+   off the older logs each time a new batch arrives. */
+.new-badge {
+  display: inline-block; vertical-align: middle;
+  margin-left: 8px; padding: 1px 4px;
+  font-size: 7px; font-weight: 800; line-height: 1.5;
+  letter-spacing: 0.3px; text-transform: uppercase; white-space: nowrap;
+  color: #fff; background: var(--accent-grad); border-radius: 3px;
+  box-shadow: 0 1px 4px rgba(74,158,255,0.35);
+  animation: newBadgeIn 320ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+@keyframes newBadgeIn { from { opacity: 0; transform: scale(0.5); } to { opacity: 1; transform: none; } }
+.time-cell { white-space: nowrap; }
+
+/* "Set Debug Log" button carries a live status dot: red = no active trace flag
+   on the user, green (pulsing) = a trace flag is active. */
+.trace-btn { display: inline-flex; align-items: center; gap: 7px; }
+.trace-dot {
+  width: 9px; height: 9px; border-radius: 50%; flex: 0 0 auto;
+  background: #e5484d; box-shadow: 0 0 0 3px rgba(229,72,77,0.18);
+  transition: background var(--t-med), box-shadow var(--t-med);
+}
+.trace-btn.active .trace-dot {
+  background: #2ecc71; box-shadow: 0 0 0 3px rgba(46,204,113,0.22);
+  animation: tracePulse 2s ease-in-out infinite;
+}
+@keyframes tracePulse {
+  0%, 100% { box-shadow: 0 0 0 3px rgba(46,204,113,0.22); }
+  50%      { box-shadow: 0 0 0 5px rgba(46,204,113,0.08); }
+}
+/* Duration picker inside the "Set Debug Log" popup. */
+.trace-duration { display: flex; align-items: center; gap: 10px; margin: 8px 0 2px; }
+.trace-duration input { width: 96px; }
+
+/* "LOG" file glyph in the debug-logging popup title. */
+.h2-log { vertical-align: -4px; margin-right: 6px; }
+
+/* User type-ahead lookup inside the "Set Debug Log" popup. */
+.lookup-label { display: block; font-size: 11px; color: var(--muted); margin: 10px 0 4px; }
+.user-lookup { position: relative; margin: 0 0 4px; }
+.user-lookup input { width: 100%; box-sizing: border-box; padding-right: 34px; }
+/* Clear (×) tucked inside the input on the right — a bare icon, no box (mirrors
+   the copy icon in the banner). Scoped high enough to beat the generic
+   light-theme button:hover/:focus background rules. */
+.lookup-clear {
+  position: absolute; top: 50%; right: 8px; transform: translateY(-50%);
+  width: 18px; height: 18px; padding: 0; min-width: 0;
+  display: inline-flex; align-items: center; justify-content: center;
+  font-size: 16px; line-height: 1; cursor: pointer;
+  background: transparent; border: 0; color: var(--muted);
+}
+.modal .user-lookup .lookup-clear,
+.modal .user-lookup .lookup-clear:hover:not(:disabled),
+.modal .user-lookup .lookup-clear:focus,
+.modal .user-lookup .lookup-clear:focus-visible,
+.modal .user-lookup .lookup-clear:active:not(:disabled) {
+  background: transparent; border: 0; box-shadow: none; outline: none; transform: translateY(-50%);
+}
+.modal .user-lookup .lookup-clear:hover:not(:disabled) { color: var(--fg); }
+.modal .user-lookup .lookup-results {
+  position: absolute; left: 0; right: 0; top: calc(100% + 4px); z-index: 5;
+  max-height: 240px; overflow-y: auto; padding: 4px;
+  display: flex; flex-direction: column; gap: 4px;
+  background: var(--bg-2);
+  border: 1px solid var(--border); outline: none;
+  border-radius: 10px; box-shadow: 0 6px 16px rgba(0, 0, 0, 0.08);
+  animation: modalPop 200ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+/* Each result is a blue button, like the app's primary buttons. Every state is
+   pinned to the gradient with enough specificity to beat the generic themed
+   button rules (otherwise light theme repaints them white → invisible text). */
+.lookup-item { display: flex; flex-direction: column; gap: 1px; width: 100%; text-align: left; cursor: pointer; }
+.modal .lookup-results .lookup-item,
+.modal .lookup-results .lookup-item:hover:not(:disabled),
+.modal .lookup-results .lookup-item:focus,
+.modal .lookup-results .lookup-item:focus-visible,
+.modal .lookup-results .lookup-item:active:not(:disabled) {
+  padding: 7px 12px; color: #fff; background: var(--accent-grad);
+  border: 0; border-radius: 7px; box-shadow: 0 1px 4px rgba(74, 158, 255, 0.28); outline: none;
+}
+.modal .lookup-results .lookup-item:hover:not(:disabled),
+.modal .lookup-results .lookup-item:focus-visible { filter: brightness(1.08); }
+.lookup-item .li-name { font-size: 13px; font-weight: 700; color: #fff; }
+.lookup-item .li-sub { font-size: 11px; color: rgba(255, 255, 255, 0.82); }
+.lookup-empty { padding: 8px 12px; font-size: 12px; color: var(--muted); }
+
+/* Active-trace-flag chips (one per user, each with a × to remove). */
+.trace-chips-wrap { margin: 12px 0 2px; }
+.trace-chips-wrap .chips-label { display: block; font-size: 11px; color: var(--muted); margin-bottom: 6px; }
+.trace-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.trace-chips .chips-empty { font-size: 12px; color: var(--muted); }
+.trace-chip {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 3px 4px 3px 10px; border-radius: 999px;
+  font-size: 12px; font-weight: 600; line-height: 1.4;
+  color: #fff; background: var(--accent-grad);
+  box-shadow: 0 1px 4px rgba(74, 158, 255, 0.3);
+  animation: newBadgeIn 260ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+.trace-chip.self { filter: saturate(1.15); }
+.trace-chip .chip-name { white-space: nowrap; }
+/* Trash icon on a chip — a bare icon, no box (mirrors the banner copy icon).
+   Scoped high enough to beat the generic light-theme button:hover/:focus rules. */
+.trace-chip .chip-del {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 18px; height: 18px; padding: 0; margin: 0; min-width: 0;
+  color: #fff; opacity: 0.85; background: transparent;
+  border: 0; cursor: pointer;
+}
+.trace-chip .chip-del svg { display: block; }
+.modal .trace-chip .chip-del,
+.modal .trace-chip .chip-del:hover:not(:disabled),
+.modal .trace-chip .chip-del:focus,
+.modal .trace-chip .chip-del:focus-visible,
+.modal .trace-chip .chip-del:active:not(:disabled) {
+  background: transparent; border: 0; box-shadow: none; outline: none; transform: none;
+}
+.modal .trace-chip .chip-del:hover:not(:disabled) { opacity: 1; }
+.trace-chip .chip-del:disabled, .trace-chip .chip-del.busy { opacity: 0.5; cursor: default; }
+
+/* In-popup toast for enable/delete outcomes (kept out of the main status bar).
+   Icon-in-a-circle + bold title + muted subtitle, on a soft gradient card. */
+.trace-toast {
+  display: flex; align-items: flex-start; gap: 12px;
+  margin: 12px 0 0; padding: 13px 15px; border-radius: 14px;
+  border: 1px solid transparent;
+}
+.trace-toast .toast-ico {
+  flex: 0 0 auto; width: 26px; height: 26px; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  color: #fff; margin-top: 1px;
+}
+.trace-toast .toast-body { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.trace-toast .toast-title { font-weight: 700; font-size: 13.5px; line-height: 1.3; }
+.trace-toast .toast-sub { font-size: 12.5px; line-height: 1.35; color: var(--muted); }
+
+.trace-toast.success { background: linear-gradient(135deg, rgba(29,183,102,0.16), rgba(29,183,102,0.04)); border-color: rgba(29,183,102,0.35); }
+.trace-toast.success .toast-ico { background: #1db766; }
+.trace-toast.success .toast-title { color: #34d17f; }
+.trace-toast.error { background: linear-gradient(135deg, rgba(240,65,90,0.16), rgba(240,65,90,0.04)); border-color: rgba(240,65,90,0.35); }
+.trace-toast.error .toast-ico { background: #f0415a; }
+.trace-toast.error .toast-title { color: #ff5f76; }
+.trace-toast.info { background: linear-gradient(135deg, rgba(74,158,255,0.16), rgba(74,158,255,0.04)); border-color: rgba(74,158,255,0.35); }
+.trace-toast.info .toast-ico { background: #4a9eff; }
+.trace-toast.info .toast-title { color: #6fb2ff; }
+
+:root[data-theme="light"] .trace-toast.success .toast-title { color: #1a7f37; }
+:root[data-theme="light"] .trace-toast.error .toast-title { color: #b42318; }
+:root[data-theme="light"] .trace-toast.info .toast-title { color: #1f5fb0; }
 .brand { font-weight: 600; font-size: 15px; white-space: nowrap; display: flex; align-items: center; gap: 9px; }
 .brand .app-logo { width: 26px; height: 26px; flex: 0 0 auto; border-radius: 6px; object-fit: cover; }
 .toolbar { display: flex; align-items: center; gap: 8px; flex: 1; }
@@ -185,6 +360,10 @@ button:focus-visible, select:focus-visible, input:focus-visible {
   outline: none; border-color: var(--accent); box-shadow: var(--shadow-glow);
 }
 input:focus { outline: none; border-color: var(--accent); box-shadow: var(--shadow-glow); }
+button.danger { background: #3a1d1d; border-color: var(--red); color: #ff9a92; }
+button.danger:hover:not(:disabled) { background: #4a2222; border-color: var(--red); }
+:root[data-theme="light"] button.danger { background: #fdeaea; border-color: var(--red); color: #b42318; }
+:root[data-theme="light"] button.danger:hover:not(:disabled) { background: #fbdcdc; border-color: var(--red); }
 button:disabled, input:disabled { opacity: 0.5; cursor: not-allowed; }
 button.primary { background: var(--accent-grad); border-color: transparent; color: #fff; box-shadow: 0 2px 10px rgba(74,158,255,0.3); }
 button.primary:hover:not(:disabled) { background: var(--accent-grad); color: #fff; filter: brightness(1.08); box-shadow: 0 4px 16px rgba(74,158,255,0.42); }
@@ -638,9 +817,12 @@ tbody tr.selected { background: #1a2740; }
   -webkit-backdrop-filter: blur(4px);
   display: flex; align-items: center; justify-content: center;
   z-index: 100;
-  animation: modalFade var(--t-med);
+  animation: modalFade 260ms var(--ease) both;
 }
-@keyframes modalFade { from { opacity: 0; } to { opacity: 1; } }
+@keyframes modalFade {
+  from { opacity: 0; backdrop-filter: blur(0); -webkit-backdrop-filter: blur(0); }
+  to { opacity: 1; backdrop-filter: blur(4px); -webkit-backdrop-filter: blur(4px); }
+}
 .modal-card {
   background: linear-gradient(180deg, #1b2029 0%, var(--bg-2) 100%);
   border: 1px solid var(--border);
@@ -649,9 +831,13 @@ tbody tr.selected { background: #1a2740; }
   width: 420px;
   max-width: 90vw;
   box-shadow: var(--shadow-2);
-  animation: modalPop 220ms var(--ease);
+  animation: modalPop 380ms cubic-bezier(0.22, 1, 0.36, 1) both;
 }
-@keyframes modalPop { from { opacity: 0; transform: translateY(12px) scale(0.97); } to { opacity: 1; transform: none; } }
+@keyframes modalPop {
+  from { opacity: 0; transform: translateY(28px) scale(0.9); }
+  60% { opacity: 1; }
+  to { opacity: 1; transform: none; }
+}
 .modal-card h2 { margin: 0 0 14px; }
 /* Generic form-field labels — scoped so they don't hijack the .rel-row labels
    (which lay a checkbox out beside text, not a full-width form control). */
@@ -746,6 +932,39 @@ tbody td { transition: background var(--t-fast); }
 
 /* Analysis panel + its content ease in. */
 .analysis:not(.hidden) { animation: fadeUp 260ms var(--ease); }
+
+/* --- Cold-start → workspace transition -------------------------------------
+   When the welcome hero gives way to the working layout, JS runs a FLIP: the
+   brand logo + title fly up from the hero into the top-left header and the org
+   picker + upload button (the very same nodes) glide to their toolbar homes.
+   The elements in flight wear .flip-fly; the workspace behind them rises with
+   .reveal-up. A springy overshoot ease sells the "settling into place" feel. */
+/* Only non-transition props here — the FLIP transition itself is applied inline
+   by flyFrom() so it reliably beats element-specific rules like .brand .app-logo
+   (which is more specific than this single-class selector). */
+.flip-fly {
+  position: relative;
+  transform-origin: top left;
+  will-change: transform;
+  pointer-events: none;
+  z-index: 50;
+}
+@keyframes revealUp {
+  from { opacity: 0; transform: translateY(28px); }
+  to   { opacity: 1; transform: none; }
+}
+.reveal-up { animation: revealUp 560ms cubic-bezier(0.22, 1, 0.36, 1) both; }
+
+/* New log rows drop into the list. Applied (with a capped stagger) by renderRows
+   only to rows not yet seen — the first load cascades, and a log arriving via
+   auto-refresh drops in on its own without disturbing the rows around it. */
+@keyframes rowDrop {
+  from { opacity: 0; transform: translateY(-14px); }
+  60%  { opacity: 1; }
+  to   { opacity: 1; transform: none; }
+}
+tr.row-in > td { animation: rowDrop 420ms cubic-bezier(0.22, 1, 0.36, 1) both; animation-delay: inherit; }
+tr.row-in { animation-delay: 0ms; }
 
 /* Salesforce (MCP) button gets a soft brand glow. */
 .sf-btn { box-shadow: 0 2px 10px rgba(11,92,171,0.35); }

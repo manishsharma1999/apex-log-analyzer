@@ -226,6 +226,7 @@ async function whoami(apiHost) {
     name: j.name || j.preferred_username || j.nickname || "",
     username: j.preferred_username || j.email || "",
     orgId: j.organization_id || "",
+    userId: j.user_id || "",
   };
   if (identityCache.size > 50) identityCache.delete(identityCache.keys().next().value);
   identityCache.set(cacheKey, info);
@@ -285,6 +286,167 @@ async function toolingQuery(session, soql) {
 async function restQuery(session, soql) {
   const res = await rawFetch(session, `/services/data/v${session.apiVersion}/query/?q=${encodeURIComponent(soql)}`);
   return (await res.json()).records || [];
+}
+
+// --- trace flag (explicit, user-initiated only) ---------------------------
+// We NEVER create trace flags on our own. The ONLY path that reaches this code
+// is the "Start debug logging" button in the UI (POST /api/traceflag). It puts a
+// TraceFlag on the *current* user — the one whose Chrome session we're using —
+// with a debug level tuned like the Setup UI: Apex Code = FINEST, Workflow =
+// FINER, the rest at their usual levels. An already-active flag is reused, never
+// duplicated, and the flag self-expires after TRACE_DURATION_MIN minutes.
+const TRACE_DEBUG_LEVEL_NAME = "ApexLogAnalyzer";
+const TRACE_DEBUG_LEVELS = {
+  ApexCode: "FINEST",
+  Workflow: "FINER",
+  ApexProfiling: "INFO",
+  Callout: "INFO",
+  Database: "INFO",
+  System: "DEBUG",
+  Validation: "INFO",
+  Visualforce: "INFO",
+};
+const TRACE_MAX_MIN = 24 * 60; // Salesforce caps a trace flag at 24h from start
+
+async function toolingCreate(session, sobject, fields) {
+  const res = await rawFetch(session, `/services/data/v${session.apiVersion}/tooling/sobjects/${sobject}`, {
+    method: "POST",
+    body: JSON.stringify(fields),
+  });
+  const j = await res.json();
+  if (!j || j.success === false) {
+    const e = j && j.errors && j.errors[0];
+    const msg = (e && (e.message || e)) || `Could not create ${sobject}`;
+    throw new Error(typeof msg === "string" ? msg : JSON.stringify(msg));
+  }
+  return j; // { id, success, errors }
+}
+
+async function toolingDelete(session, sobject, id) {
+  // rawFetch throws on any non-2xx, so a failed delete surfaces the SF message.
+  await rawFetch(session, `/services/data/v${session.apiVersion}/tooling/sobjects/${sobject}/${id}`, { method: "DELETE" });
+}
+
+// The live user-debug trace flag on this user, or null. Shared by the status
+// check and the create path (so we never stack duplicates).
+async function activeUserTraceFlag(session, userId) {
+  const nowIso = new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
+  const rows = await toolingQuery(session,
+    `SELECT Id, ExpirationDate FROM TraceFlag WHERE LogType='USER_DEBUG' AND TracedEntityId='${soqlLiteral(userId)}' AND ExpirationDate > ${nowIso} ORDER BY ExpirationDate DESC LIMIT 1`);
+  return rows[0] || null;
+}
+
+// Type-ahead lookup for the debug-log popup: active org users matched by name,
+// username, or email. Read-only.
+async function searchOrgUsers(apiHost, q) {
+  const term = String(q || "").trim();
+  if (term.length < 2) return { users: [] };
+  const s = await getSession(apiHost);
+  const like = `%${soqlLiteral(term)}%`;
+  const rows = await restQuery(s,
+    `SELECT Id, Name, Username, Email FROM User WHERE IsActive = true AND (Name LIKE '${like}' OR Username LIKE '${like}' OR Email LIKE '${like}') ORDER BY Name LIMIT 25`);
+  return { users: rows.map((r) => ({ id: r.Id, name: r.Name, username: r.Username || "", email: r.Email || "" })) };
+}
+
+// Resolve a set of user ids to {id, name, username}. Used to label trace flags.
+async function usersByIds(session, ids) {
+  const uniq = [...new Set(ids.filter(Boolean))];
+  if (!uniq.length) return {};
+  const inList = uniq.map((i) => `'${soqlLiteral(i)}'`).join(",");
+  const map = {};
+  for (const u of await restQuery(session, `SELECT Id, Name, Username FROM User WHERE Id IN (${inList})`)) {
+    map[u.Id] = { id: u.Id, name: u.Name, username: u.Username || "" };
+  }
+  return map;
+}
+
+// Read-only: every active USER_DEBUG trace flag in the org, labelled by user.
+// `selfActive` drives the red/green dot (green only when the SESSION user has
+// one); `users` drives the per-user chips in the popup. Never creates anything.
+async function traceFlagStatus(apiHost) {
+  const s = await getSession(apiHost);
+  const me = await whoami(apiHost);
+  const nowIso = new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
+  const flags = await toolingQuery(s,
+    `SELECT Id, TracedEntityId, ExpirationDate FROM TraceFlag WHERE LogType='USER_DEBUG' AND ExpirationDate > ${nowIso} ORDER BY ExpirationDate DESC`);
+  const names = await usersByIds(s, flags.map((f) => f.TracedEntityId));
+  const users = flags.map((f) => {
+    const u = names[f.TracedEntityId] || {};
+    return {
+      id: f.TracedEntityId,
+      name: u.name || f.TracedEntityId,
+      username: u.username || "",
+      expiration: f.ExpirationDate,
+      isSelf: f.TracedEntityId === me.userId,
+    };
+  });
+  const self = users.find((u) => u.isSelf) || null;
+  return { active: !!self, selfActive: !!self, expiration: self ? self.expiration : null, self: me.userId, users };
+}
+
+// Resolve the display name for a target user (session user or another user).
+async function traceTargetName(session, me, targetId) {
+  if (targetId === me.userId) return me.name || me.username || targetId;
+  return ((await usersByIds(session, [targetId]))[targetId] || {}).name || targetId;
+}
+
+async function ensureTraceFlag(apiHost, minutes, userId) {
+  // Duration is chosen by the user in the popup — never defaulted here. Reject a
+  // missing/absurd value rather than silently picking one.
+  const mins = Math.round(Number(minutes));
+  if (!Number.isFinite(mins) || mins < 1) throw new Error("Pick how long the trace flag should last (at least 1 minute).");
+  if (mins > TRACE_MAX_MIN) throw new Error("Salesforce limits a trace flag to 24 hours (1440 minutes).");
+  const s = await getSession(apiHost);
+  const me = await whoami(apiHost);
+  // Target the requested user; default to the session user when none is given.
+  const targetId = userId || me.userId;
+  if (!targetId) throw new Error("Couldn't determine which Salesforce user to trace.");
+  const targetName = await traceTargetName(s, me, targetId);
+  const nowIso = new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
+
+  // Already have a live trace flag for this user? Reuse it — don't stack duplicates.
+  const active = await activeUserTraceFlag(s, targetId);
+  if (active) {
+    return { created: false, alreadyActive: true, active: true, expiration: active.ExpirationDate, user: targetName, userId: targetId };
+  }
+
+  // Find (or create) our named debug level, then attach a fresh flag to it.
+  const dl = await toolingQuery(s, `SELECT Id FROM DebugLevel WHERE DeveloperName='${TRACE_DEBUG_LEVEL_NAME}' LIMIT 1`);
+  let debugLevelId = dl.length ? dl[0].Id : null;
+  if (!debugLevelId) {
+    const created = await toolingCreate(s, "DebugLevel", {
+      DeveloperName: TRACE_DEBUG_LEVEL_NAME,
+      MasterLabel: TRACE_DEBUG_LEVEL_NAME,
+      ...TRACE_DEBUG_LEVELS,
+    });
+    debugLevelId = created.id;
+  }
+
+  const expiration = new Date(Date.now() + mins * 60000).toISOString().replace(/\.\d{3}Z$/, "Z");
+  const flag = await toolingCreate(s, "TraceFlag", {
+    TracedEntityId: targetId,
+    DebugLevelId: debugLevelId,
+    LogType: "USER_DEBUG",
+    StartDate: nowIso,
+    ExpirationDate: expiration,
+  });
+  return { created: true, alreadyActive: false, active: true, expiration, user: targetName, userId: targetId, id: flag.id };
+}
+
+// Remove every live user-debug trace flag for a user (the given userId, or the
+// session user by default). Explicit and user-initiated only. We delete the
+// flag, not the shared DebugLevel — the level is reused next time.
+async function deleteTraceFlag(apiHost, userId) {
+  const s = await getSession(apiHost);
+  const me = await whoami(apiHost);
+  const targetId = userId || me.userId;
+  if (!targetId) throw new Error("Couldn't determine which Salesforce user to update.");
+  const targetName = await traceTargetName(s, me, targetId);
+  const nowIso = new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
+  const rows = await toolingQuery(s,
+    `SELECT Id FROM TraceFlag WHERE LogType='USER_DEBUG' AND TracedEntityId='${soqlLiteral(targetId)}' AND ExpirationDate > ${nowIso}`);
+  for (const r of rows) await toolingDelete(s, "TraceFlag", r.Id);
+  return { deleted: rows.length, active: false, user: targetName, userId: targetId };
 }
 
 // The SOQL queries a log actually ran (from its SOQL_EXECUTE_BEGIN lines).
@@ -923,11 +1085,13 @@ async function onSave({ apiHost, sobject }) {
   } catch (e) { data.validationRulesError = e.message; }
   try {
     data.flows = await restQuery(s,
-      `SELECT Label, ProcessType, TriggerType, TriggerOrder, RecordTriggerType FROM FlowDefinitionView ` +
-      `WHERE TriggerObjectOrEvent='${lit}' AND IsActive=true`);
+      `SELECT Label, ProcessType, TriggerType, TriggerOrder, RecordTriggerType, TriggerObjectOrEventLabel FROM FlowDefinitionView ` +
+      `WHERE TriggerObjectOrEventId='${lit}' AND IsActive=true`);
   } catch (e) { data.flowsError = e.message; }
   try {
-    data.workflowRules = await toolingQuery(s, `SELECT Name, Active FROM WorkflowRule WHERE TableEnumOrId='${lit}'`);
+    // WorkflowRule has no queryable "Active" column (active state lives in
+    // Metadata, which can't be fetched in a multi-row query). List the rules.
+    data.workflowRules = await toolingQuery(s, `SELECT Id, Name, TableEnumOrId FROM WorkflowRule WHERE TableEnumOrId='${lit}'`);
   } catch (e) { data.workflowRulesError = e.message; }
   const userContent = `Object: ${sobject}\n\nAutomation data from the org (JSON):\n\n\`\`\`json\n${JSON.stringify(data, null, 2)}\n\`\`\``;
   const text = await runClaude(CLAUDE_ONSAVE_SYSTEM, userContent,
@@ -1059,6 +1223,21 @@ const server = http.createServer(async (req, res) => {
     if (p === "/api/onsave" && req.method === "POST") {
       const { org, sobject } = await readBody(req);
       return sendJson(res, 200, await onSave({ apiHost: org, sobject }));
+    }
+    // Read-only user lookup for the debug-log picker (name / username / email).
+    if (p === "/api/users") return sendJson(res, 200, await searchOrgUsers(u.searchParams.get("org"), u.searchParams.get("q") || ""));
+    // Read-only status for the button's red/green indicator + active-user chips.
+    if (p === "/api/traceflag-status") return sendJson(res, 200, await traceFlagStatus(u.searchParams.get("org")));
+    // Explicit, user-initiated only — reached solely from the "Set Debug Log"
+    // button after the user confirms a duration. Never called on load, poll, or
+    // org switch. `userId` targets a specific user (defaults to session user).
+    if (p === "/api/traceflag" && req.method === "POST") {
+      const { org, minutes, userId } = await readBody(req);
+      return sendJson(res, 200, await ensureTraceFlag(org, minutes, userId));
+    }
+    if (p === "/api/traceflag" && req.method === "DELETE") {
+      const { org, userId } = await readBody(req);
+      return sendJson(res, 200, await deleteTraceFlag(org, userId));
     }
     if (p === "/api/settings") {
       if (req.method === "POST") {

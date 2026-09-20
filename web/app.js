@@ -46,12 +46,33 @@ let silentPollFailures = 0;     // consecutive silent auto-refresh failures (sto
 let indexedBytes = 0;           // total bytes held in the in-memory body index
 let logbodyAbort = null;        // AbortController for the in-flight viewer log-body fetch
 let rowCap = 0;                 // how many list rows are currently materialized (0 = default cap)
+// Ids whose list row has already played its drop-in animation. The list fully
+// rebuilds on every render (incl. each auto-refresh poll), so this is what keeps
+// existing rows from re-animating — only genuinely new logs drop in. Cleared on
+// resetView so a freshly loaded org cascades in again.
+const seenRowIds = new Set();
+// Ids captured in the most recent batch that brought new logs — these get the
+// small "NEW" badge. When a later poll brings a fresh batch, this is replaced so
+// the badge moves off the older logs and onto only the newly captured ones.
+// Empty polls leave it untouched, so "NEW" persists until the next real batch.
+let newRowIds = new Set();
+// The first load after selecting/switching an org is a baseline — the logs that
+// already existed aren't "new" to the user, so they don't get badged. Only logs
+// that show up on a later refresh do. Reset on resetView.
+let baselineLoaded = false;
+// High-water mark: the newest StartTime (ms) we've already shown. A later log
+// only counts as "newly captured" if it's at or past this — that's what stops
+// an old log surfaced by "Fetch all" from being mistaken for a new arrival.
+let seenMaxTime = 0;
+// A log only counts as "NEW" if it was created within this window — so an old
+// log surfacing (e.g. via Fetch all) never gets flagged as newly captured.
+const NEW_BADGE_MS = 30 * 60 * 1000;
 
 const $ = (id) => document.getElementById(id);
 const els = {};
 [
-  "orgSelect", "autoBtn", "uploadBtn", "fileInput", "onSaveBtn", "sfBtn", "modelSelect", "currentUser", "statusBar",
-  "search", "windowMin", "fetchBtn", "fetchAllBtn", "searchInfo", "logCount", "logRows", "listEmpty", "listPane", "dropHint",
+  "orgSelect", "autoBtn", "uploadBtn", "fileInput", "onSaveBtn", "sfBtn", "traceBtn", "modelSelect", "currentUser", "statusBar",
+  "search", "windowMin", "windowUnit", "fetchBtn", "fetchAllBtn", "searchInfo", "logCount", "logRows", "listEmpty", "listPane", "dropHint",
   "selectAll", "bulkBar", "selCount", "analyzeSelected", "downloadSelected", "compareBtn", "codeHealthBtn", "matchInfo",
   "compareBar", "compareStep", "compareCancel", "compareNext", "compareRun",
   "viewRaw", "viewProfile", "viewFlame", "viewQueries", "viewIssues", "viewVars",
@@ -195,10 +216,26 @@ async function loadWhoami() {
     if (seq !== whoamiSeq) return; // a newer org selection won the race
     const name = info.name || info.username || "Unknown user";
     const uname = info.username && info.username !== name ? info.username : "";
+    const copyTarget = info.username || name;
+    const copyIcon =
+      `<button type="button" class="cu-copy" title="Copy username" aria-label="Copy username">` +
+      `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">` +
+      `<rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button>`;
     els.currentUser.innerHTML =
       `👤 <span class="cu-label">Logged in as:</span> <span class="cu-name">${escapeHtml(name)}</span>` +
-      (uname ? ` <span class="cu-username">(${escapeHtml(uname)})</span>` : "");
+      (uname ? ` <span class="cu-username">(${escapeHtml(uname)})</span>` : "") +
+      copyIcon;
     els.currentUser.title = `Signed in as ${name}${uname ? " (" + uname + ")" : ""} — ${org}`;
+    const copyBtn = els.currentUser.querySelector(".cu-copy");
+    if (copyBtn) copyBtn.addEventListener("click", async (e) => {
+      e.stopPropagation();
+      try {
+        await navigator.clipboard.writeText(copyTarget);
+        copyBtn.classList.add("copied");
+        copyBtn.title = "Copied!";
+        setTimeout(() => { copyBtn.classList.remove("copied"); copyBtn.title = "Copy username"; }, 1300);
+      } catch { status("Couldn't copy — clipboard blocked by the browser.", "error"); }
+    });
     els.currentUser.classList.remove("hidden");
   } catch {
     if (seq !== whoamiSeq) return;
@@ -220,12 +257,58 @@ async function refreshLogs({ silent } = {}) {
     // view (or its polling) with this stale response.
     if (els.orgSelect.value !== org) return;
     silentPollFailures = 0; // a successful poll clears the failure streak
-    const sig = records.map((r) => r.Id).join(",");
+    // Keep the debug-log indicator honest while polling — refresh it at most
+    // once a minute so it flips back to red when the trace flag expires.
+    if (Date.now() - lastTraceCheck > 60000) refreshTraceStatus();
+    // Merge, don't replace. A log already captured into the list must never
+    // disappear just because it aged out of the "last N minutes" window on a
+    // later poll (or a narrower fetch). Union by Id — a newer record wins, so a
+    // log's finalized Status/Duration updates in place — then sort newest first.
+    const byId = new Map(state.logs.map((r) => [r.Id, r]));
+    for (const r of records) byId.set(r.Id, r);
+    const merged = [...byId.values()].sort((a, b) => {
+      const ta = a.StartTime || "", tb = b.StartTime || "";
+      if (ta !== tb) return ta < tb ? 1 : -1;      // StartTime descending
+      return (a.Id || "") < (b.Id || "") ? 1 : -1; // stable tie-break
+    });
+    const sig = merged.map((r) => r.Id).join(",");
     // A silent poll with an unchanged log set must not re-render or re-search —
     // that full rebuild is what made the list (and search results) blink in a loop.
     if (silent && sig === state.logsSig) return;
     state.logsSig = sig;
-    state.logs = records;
+    // Flag the "NEW" batch. A log counts as newly captured only if it is
+    // genuinely NEWER than everything we've already shown — not merely absent
+    // from the list. That distinction is what makes every scenario behave:
+    //   • Auto-refresh: a just-created log has StartTime > seenMaxTime → NEW;
+    //     the next batch ADDS to the NEW set — it does not displace the prior
+    //     ones. Async / same-transaction logs land one at a time, so the earlier
+    //     rows must keep their badge while the related ones keep arriving.
+    //   • Fetch logs (last N min): the recent logs it returns are newer than the
+    //     seen max → NEW.
+    //   • Fetch all: it surfaces OLD logs too, but those are older than seenMaxTime
+    //     so they are NOT flagged — only any genuinely newer ones are.
+    // The first load per org is a silent baseline (pre-existing logs aren't new).
+    // NEW markers accumulate and are aged out purely by the 30-min window (the
+    // render guard drops each badge once its log passes NEW_BADGE_MS), so nothing
+    // is un-badged just because a newer sibling showed up.
+    const cutoff = Date.now() - NEW_BADGE_MS;
+    const arrived = records.filter((r) => {
+      if (!r.Id || !r.StartTime || seenRowIds.has(r.Id)) return false;
+      const t = new Date(r.StartTime).getTime();
+      return t >= seenMaxTime && t >= cutoff;
+    });
+    if (!baselineLoaded) {
+      baselineLoaded = true; // establish the baseline without badging anything
+    } else {
+      for (const r of arrived) newRowIds.add(r.Id); // union — keep prior NEW rows
+    }
+    // Advance the high-water mark past everything in this response (baseline
+    // included) so the next refresh measures "newer than this".
+    for (const r of records) {
+      const t = r.StartTime ? new Date(r.StartTime).getTime() : 0;
+      if (t > seenMaxTime) seenMaxTime = t;
+    }
+    state.logs = merged;
     applyFilter();
     prefetchBodies();                    // warm the in-memory index in the background
     if (state.query.trim()) searchInstant(); // refresh content hits for new logs
@@ -243,9 +326,11 @@ async function refreshLogs({ silent } = {}) {
 }
 
 // --- auto-capture ---------------------------------------------------------
-// NOTE: this app never creates/enables trace flags — you manage debug logging
-// yourself in Setup → Debug Logs. "Auto-capture" here just auto-refreshes the
-// list so new logs your org already generates appear on their own.
+// "Auto-capture" just auto-refreshes the list so new logs the org generates
+// appear on their own — it only READS logs, it never enables debug logging.
+// Enabling logging (creating a TraceFlag) happens ONLY when the user clicks
+// "Start debug logging" (openTraceFlag) and confirms a duration — never here,
+// and never automatically.
 function startPolling() {
   stopPolling();
   if (!state.auto) return;
@@ -264,6 +349,7 @@ async function startCapture() {
   if (!org) return;
   state.org = org;
   loadWhoami(); // show which SF user this session belongs to (fire-and-forget)
+  refreshTraceStatus(); // paint the red/green debug-log indicator (read-only)
   await refreshLogs();
   startPolling();
 }
@@ -275,8 +361,10 @@ function fetchLogsClicked({ all = false } = {}) {
   if (all) {
     state.windowMin = 0; // 0 = no time filter
   } else {
-    const mins = parseInt(els.windowMin.value, 10);
-    state.windowMin = Number.isFinite(mins) && mins > 0 ? mins : 0;
+    const v = parseInt(els.windowMin.value, 10);
+    const unit = els.windowUnit ? els.windowUnit.value : "min";
+    const mult = unit === "day" ? 1440 : unit === "hour" ? 60 : 1;
+    state.windowMin = Number.isFinite(v) && v > 0 ? v * mult : 0;
   }
   state.fetched = true;
   startCapture();
@@ -439,6 +527,100 @@ function applyFilter() {
   renderRows();
 }
 
+// --- Cold-start → workspace transition -------------------------------------
+// When the welcome hero gives way to the working layout we run a FLIP: the
+// brand logo + title fly up from the hero into the top-left header, the org
+// picker + upload button (the very same DOM nodes) glide to their toolbar
+// homes, and the workspace rises into view. Purely cosmetic — if anything
+// can't be measured, or the user prefers reduced motion, we just skip it.
+const prefersReducedMotion =
+  window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+let heroWasShown = null; // tracks the previous cold-start state to detect the leave
+
+function rectOf(el) {
+  return el && el.isConnected ? el.getBoundingClientRect() : null;
+}
+
+// Snapshot the FIRST (hero) positions of everything that has a destination.
+function captureHeroFlip() {
+  const hero = els.emptyHero;
+  const orgPick = els.orgSelect ? els.orgSelect.closest(".org-pick") : null;
+  return {
+    logo: rectOf(hero && hero.querySelector(".hero-logo")),
+    title: rectOf(hero && hero.querySelector(".hero-title")),
+    org: rectOf(orgPick),
+    upload: rectOf(els.uploadBtn),
+  };
+}
+
+// Given an element in its final (LAST) spot and where it started (FIRST rect),
+// invert it back to the start then release — the browser tweens the transform.
+function flyFrom(el, first, { scale = false } = {}) {
+  if (!el || !first) return;
+  const last = el.getBoundingClientRect();
+  if (!last.width || !last.height) return;
+  const dx = first.left - last.left;
+  const dy = first.top - last.top;
+  const s = scale ? first.width / last.width : 1;
+  if (Math.abs(dx) < 1 && Math.abs(dy) < 1 && Math.abs(s - 1) < 0.01) return;
+  el.classList.add("flip-fly");
+  // Invert: instantly place the element back at its FIRST position. The
+  // transition MUST be off for this step, and inline styles beat any stylesheet
+  // rule (e.g. .brand .app-logo's own transform transition), so set both inline.
+  el.style.transition = "none";
+  el.style.transformOrigin = "top left";
+  el.style.transform = `translate(${dx}px, ${dy}px) scale(${s})`;
+  // Two frames so the inverted transform is committed with no transition before
+  // we turn the transition on and release to the natural position.
+  requestAnimationFrame(() =>
+    requestAnimationFrame(() => {
+      el.style.transition = "transform 640ms cubic-bezier(0.22, 1, 0.36, 1)";
+      el.style.transform = "translate(0px, 0px) scale(1)";
+    })
+  );
+  const done = (e) => {
+    if (e && e.propertyName && e.propertyName !== "transform") return;
+    el.classList.remove("flip-fly");
+    el.style.transition = "";
+    el.style.transform = "";
+    el.style.transformOrigin = "";
+    el.style.willChange = "";
+    el.removeEventListener("transitionend", done);
+  };
+  el.addEventListener("transitionend", done);
+  setTimeout(done, 780); // fallback if transitionend never fires
+}
+
+// Replay a slide-up reveal on a workspace chunk that's newly on screen.
+function oneShotReveal(el) {
+  if (!el) return;
+  el.classList.remove("reveal-up");
+  void el.offsetWidth; // reflow so the animation restarts even if it lingered
+  el.classList.add("reveal-up");
+  const done = () => {
+    el.classList.remove("reveal-up");
+    el.removeEventListener("animationend", done);
+  };
+  el.addEventListener("animationend", done);
+}
+
+function playHeroFlip(first) {
+  const brandLogo = els.brand ? els.brand.querySelector(".app-logo") : null;
+  const brandTitle = els.brand ? els.brand.querySelector("span") : null;
+  const orgPick = els.orgSelect ? els.orgSelect.closest(".org-pick") : null;
+  flyFrom(brandLogo, first.logo, { scale: true });
+  flyFrom(brandTitle, first.title, { scale: true });
+  flyFrom(orgPick, first.org);
+  flyFrom(els.uploadBtn, first.upload);
+  // The workspace behind the flight rises into view.
+  oneShotReveal(els.searchRow);
+  oneShotReveal(els.controlsRow);
+  oneShotReveal(els.listPane ? els.listPane.querySelector(".table-wrap") : null);
+  if (els.viewerPane && !els.viewerPane.classList.contains("hidden")) {
+    oneShotReveal(els.viewerPane);
+  }
+}
+
 // Progressive disclosure: keep the initial screen to just the fetch controls.
 // The search box appears once there are logs to search; the whole viewer pane
 // (and its divider) appears only once a log is actually opened — until then the
@@ -447,6 +629,11 @@ function updateChrome() {
   const hasLogs = (state.uploads.length + state.logs.length) > 0;
   const hasOpen = state.selectedId != null;
   const hasOrg = !!(els.orgSelect && els.orgSelect.value);
+  // Detect the cold-start → workspace leave and snapshot hero positions *before*
+  // the DOM mutations below move the shared nodes and hide the hero.
+  const showHeroNow = !hasOrg && !hasLogs;
+  const leavingHero = heroWasShown === true && !showHeroNow && !prefersReducedMotion;
+  const flipFirst = leavingHero ? captureHeroFlip() : null;
   // Cold start — no org picked and nothing loaded — shows a centered welcome hero
   // instead of a barren toolbar. The org picker + upload button physically move
   // into the hero (no duplicate controls), then back to the toolbar once you're
@@ -458,6 +645,7 @@ function updateChrome() {
   if (els.layout) els.layout.classList.toggle("solo", !hasOpen);
   if (els.sfBtn) els.sfBtn.classList.toggle("hidden", !hasLogs);       // searches prior art on selected logs' errors
   if (els.onSaveBtn) els.onSaveBtn.classList.toggle("hidden", !hasOrg); // order-of-execution needs an org
+  if (els.traceBtn) els.traceBtn.classList.toggle("hidden", !hasOrg);   // trace flag targets the org's current user
   // Fetch / auto-refresh only make sense against a chosen org; until then the
   // only useful control is "Upload .log" (which works with no org). Uploading a
   // .log still counts as hasLogs, so the model picker + table header appear then.
@@ -476,6 +664,9 @@ function updateChrome() {
   if (els.brand) els.brand.classList.toggle("hidden", showHero); // logo+title live in the hero at cold start
   if (els.controlsRow) els.controlsRow.classList.toggle("hidden", showHero);
   if (els.listEmpty) els.listEmpty.classList.toggle("hidden", showHero || state.filtered.length > 0);
+  // Now that the DOM sits in its final layout, play the FLIP from the snapshot.
+  heroWasShown = showHero;
+  if (leavingHero) playHeroFlip(flipFirst);
 }
 
 // Cold start moves the org picker + upload button into the centered hero card;
@@ -515,6 +706,8 @@ function renderRows() {
   const cap = rowCap > 0 ? rowCap : ROW_RENDER_CAP;
   const shown = Math.min(state.filtered.length, cap);
   let rowNum = 0;
+  let newRowIdx = 0; // staggers the cascade across rows that are new this render
+  const animateRows = !prefersReducedMotion;
   for (let i = 0; i < shown; i++) {
     const it = state.filtered[i];
     rowNum++;
@@ -530,10 +723,16 @@ function renderRows() {
     tr.className = "tile-main" + (hasHits ? " has-hits" + (open ? " tile-open" : "") : " clickable" + (open ? " selected" : ""));
     const checked = state.checked.has(it.id) ? "checked" : "";
     const pill = it.kind === "upload" ? "up" : (it.ok ? "ok" : "err");
+    // Badge only genuinely-new rows, and only while the log is still within the
+    // 30-min freshness window. The badge sits inline just after the timestamp
+    // (in the existing gap before the User column) so the row number stays put.
+    const isNew = newRowIds.has(it.id) && it.time && (Date.now() - new Date(it.time).getTime()) <= NEW_BADGE_MS;
+    if (isNew) tr.classList.add("is-new");
+    const newBadge = isNew ? `<span class="new-badge">NEW</span>` : "";
     tr.innerHTML = `
       <td class="rownum">${rowNum}</td>
       <td class="chk"><input type="checkbox" ${checked} /></td>
-      <td>${it.kind === "upload" ? "📄 " : ""}${fmtTime(it.time)}</td>
+      <td class="time-cell">${it.kind === "upload" ? "📄 " : ""}${fmtTime(it.time)}${newBadge}</td>
       <td class="usr">${escapeHtml(it.user)}</td>
       <td class="op">${escapeHtml(it.operation)}</td>
       <td><span class="status-pill ${pill}">${escapeHtml(it.status)}</span></td>
@@ -550,6 +749,21 @@ function renderRows() {
     cb.addEventListener("change", (e) => toggleCheck(it.id, e.target.checked));
     const dl = tr.querySelector(".dl button");
     dl.addEventListener("click", (e) => { e.stopPropagation(); downloadLog(it.id); });
+    // Drop-in animation: only for rows we haven't shown before (first load, or a
+    // new log arriving via auto-refresh). Seen rows render instantly so the list
+    // doesn't flicker on every poll. Stagger is capped so a big first batch
+    // cascades quickly rather than trickling in for seconds.
+    if (animateRows && !seenRowIds.has(it.id)) {
+      tr.classList.add("row-in");
+      tr.style.animationDelay = Math.min(newRowIdx, 14) * 28 + "ms";
+      newRowIdx++;
+      tr.addEventListener("animationend", function onEnd() {
+        tr.classList.remove("row-in");
+        tr.style.animationDelay = "";
+        tr.removeEventListener("animationend", onEnd);
+      });
+    }
+    seenRowIds.add(it.id);
     els.logRows.appendChild(tr);
 
     if (hasHits) {
@@ -718,6 +932,10 @@ async function downloadSelected() {
 function resetView() {
   state.logs = [];
   state.logsSig = "";
+  seenRowIds.clear(); // let the next org's logs cascade in fresh
+  newRowIds = new Set(); // drop any "NEW" markers from the previous org
+  baselineLoaded = false; // next org's first load is a baseline, not "new"
+  seenMaxTime = 0; // reset the high-water mark for the next org
   state.selectedId = null;
   state.logBody = "";
   state.checked.clear();
@@ -1650,6 +1868,248 @@ async function openOnSave() {
   });
 }
 
+// The "Set Debug Log" button carries a live indicator: red = no active trace
+// flag on the session's user, green = one is active. This is read-only — it
+// never creates anything.
+function setTraceIndicator(active, expiration) {
+  if (!els.traceBtn) return;
+  els.traceBtn.classList.toggle("active", !!active);
+  const until = active && expiration ? ` (until ${new Date(expiration).toLocaleTimeString()})` : "";
+  els.traceBtn.title = active
+    ? `Debug logging is ON for your user${until}. Click to extend or change the duration.`
+    : "No active trace flag on your user — the org isn't writing your debug logs yet. Click to start debug logging (you choose how long).";
+}
+let lastTraceCheck = 0;
+async function refreshTraceStatus() {
+  const org = els.orgSelect.value;
+  if (!org || !els.traceBtn) return;
+  lastTraceCheck = Date.now();
+  try {
+    const r = await api(`/api/traceflag-status?org=${encodeURIComponent(org)}`);
+    if (els.orgSelect.value !== org) return; // org changed mid-flight
+    // Green ONLY when the session's own user has an active flag — other users'
+    // flags show as chips inside the popup, not on the toolbar dot.
+    setTraceIndicator(!!r.selfActive, r.expiration);
+  } catch { /* transient — leave the current indicator as-is */ }
+}
+
+// Small trash/dustbin glyph for the "remove trace flag" chip buttons. Inline SVG
+// (allowed by the CSP) so it inherits the chip's white color via currentColor.
+const TRASH_SVG = '<svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="3 6 21 6"></polyline><path d="M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2"></path><path d="M6 6l1 14a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-14"></path><line x1="10" y1="11" x2="10" y2="17"></line><line x1="14" y1="11" x2="14" y2="17"></line></svg>';
+
+// Set a debug-log TraceFlag on a chosen user — strictly on demand. Opens a popup
+// where the user searches the org (by name, username, or email) for whom to
+// trace, picks a duration, and clicks Create; nothing is created until then.
+// Every user with an active USER_DEBUG flag is listed as a chip with a × to
+// remove it. The debug level (Apex = FINEST, Workflow = FINER) is fixed
+// server-side to match the Setup UI.
+function openTraceFlag() {
+  if (!state.org) { status("Select a Salesforce org first.", "error"); return; }
+  const overlay = document.createElement("div");
+  overlay.className = "modal";
+  overlay.innerHTML = `
+    <div class="modal-card">
+      <h2><svg class="h2-log" viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round" aria-hidden="true"><path d="M13.5 3H6.5A1.5 1.5 0 0 0 5 4.5v15A1.5 1.5 0 0 0 6.5 21h11a1.5 1.5 0 0 0 1.5-1.5V8.5z"></path><path d="M13.5 3v5.5h5.5"></path><text x="12" y="17.6" font-size="5" font-weight="800" fill="currentColor" stroke="none" text-anchor="middle" letter-spacing="-0.3" font-family="Arial, Helvetica, sans-serif">LOG</text></svg> Start debug logging</h2>
+      <p class="hint">Turns on debug logging for a Salesforce user — Apex Code = <strong>FINEST</strong>, Workflow = <strong>FINER</strong>. Search for any active user by name, username, or email, or leave it on yourself. Logs for a traced user capture here automatically.</p>
+      <label class="lookup-label" for="traceUserSearch">Set debug logging for</label>
+      <div class="user-lookup">
+        <input id="traceUserSearch" type="text" autocomplete="off" spellcheck="false" placeholder="🔎 Search users by name, username, or email…" />
+        <button type="button" id="traceUserClear" class="lookup-clear hidden" title="Clear and choose a different user" aria-label="Clear selected user">×</button>
+        <div id="traceUserResults" class="lookup-results hidden"></div>
+      </div>
+      <div class="trace-duration">
+        <input id="traceDur" type="number" min="1" step="1" value="30" inputmode="numeric" />
+        <select id="traceUnit">
+          <option value="min" selected>minutes</option>
+          <option value="hour">hours</option>
+        </select>
+      </div>
+      <p class="hint" id="traceNote">Salesforce caps a trace flag at 24 hours.</p>
+      <div class="trace-chips-wrap">
+        <span class="chips-label">Debug logging is active for:</span>
+        <div id="traceChips" class="trace-chips"><span class="chips-empty">Loading…</span></div>
+      </div>
+      <div id="traceToast" class="trace-toast hidden" role="status" aria-live="polite"></div>
+      <div class="modal-actions">
+        <span class="spacer"></span>
+        <button id="traceCancel">Close</button>
+        <button id="traceGo" class="primary">Create</button>
+      </div>
+    </div>`;
+  document.body.appendChild(overlay);
+  const search = overlay.querySelector("#traceUserSearch");
+  const clearBtn = overlay.querySelector("#traceUserClear");
+  const results = overlay.querySelector("#traceUserResults");
+  const dur = overlay.querySelector("#traceDur");
+  const unit = overlay.querySelector("#traceUnit");
+  const go = overlay.querySelector("#traceGo");
+  const note = overlay.querySelector("#traceNote");
+  const chips = overlay.querySelector("#traceChips");
+  const toastEl = overlay.querySelector("#traceToast");
+  const close = () => overlay.remove();
+
+  // Show enable/delete outcomes inside this popup (not the main status bar) as
+  // an icon + title + subtitle card.
+  const TOAST_ICON = {
+    success: `<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.5l4.5 4.5L19 7.5"></path></svg>`,
+    error: `<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M6 6l12 12M18 6L6 18"></path></svg>`,
+    info: `<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 8h.01M11 12h1v5h1"></path></svg>`,
+  };
+  let toastTimer = null;
+  const toast = (title, sub, kind = "info") => {
+    if (!toastEl) return;
+    toastEl.className = `trace-toast ${kind}`;
+    toastEl.innerHTML = `<span class="toast-ico">${TOAST_ICON[kind] || TOAST_ICON.info}</span>`
+      + `<span class="toast-body"><span class="toast-title">${escapeHtml(title)}</span>`
+      + (sub ? `<span class="toast-sub">${escapeHtml(sub)}</span>` : "")
+      + `</span>`;
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => { toastEl.className = "trace-toast hidden"; }, 6000);
+  };
+
+  // Target defaults to the session's own user (userId null → server uses the
+  // session user). The box is pre-filled with the current user's name; the ×
+  // clears it so a different user can be searched. Leaving it blank/self keeps
+  // the trace on yourself.
+  let selfName = "your user";
+  let target = { id: null, name: selfName };
+  const showClear = (on) => clearBtn.classList.toggle("hidden", !on);
+  const setTarget = (id, name) => { target = { id, name }; };
+  // Pre-select the session user so the box opens showing who we'll trace.
+  api(`/api/whoami?org=${encodeURIComponent(state.org)}`)
+    .then((me) => {
+      if (!overlay.isConnected) return;
+      selfName = me.name || me.username || "your user";
+      if (!target.id && !search.value) { search.value = selfName; showClear(true); }
+    })
+    .catch(() => {});
+  clearBtn.addEventListener("click", () => {
+    setTarget(null, "your user"); // blank = yourself
+    search.value = ""; showClear(false); hideResults(); search.focus();
+  });
+
+  // Render one chip per user with a live trace flag; each × removes that user's
+  // flag. This replaces the old single "Delete" button — deletion is per-user.
+  const renderChips = async () => {
+    try {
+      const r = await api(`/api/traceflag-status?org=${encodeURIComponent(state.org)}`);
+      if (!overlay.isConnected) return;
+      setTraceIndicator(!!r.selfActive, r.expiration); // keep the toolbar dot honest
+      const users = r.users || [];
+      if (!users.length) { chips.innerHTML = `<span class="chips-empty">No active trace flags.</span>`; return; }
+      chips.innerHTML = users.map((u) => {
+        const until = u.expiration ? new Date(u.expiration).toLocaleTimeString() : "";
+        const label = u.name + (u.isSelf ? " (you)" : "");
+        return `<span class="trace-chip${u.isSelf ? " self" : ""}" title="${escapeHtml(u.username || u.name)}${until ? ` — until ${until}` : ""}">`
+          + `<span class="chip-name">${escapeHtml(label)}</span>`
+          + `<button class="chip-del" data-id="${escapeHtml(u.id)}" data-name="${escapeHtml(u.name)}" title="Remove trace flag for ${escapeHtml(u.name)}" aria-label="Remove trace flag for ${escapeHtml(u.name)}">${TRASH_SVG}</button>`
+          + `</span>`;
+      }).join("");
+      chips.querySelectorAll(".chip-del").forEach((btn) => btn.addEventListener("click", () => removeFlag(btn)));
+    } catch {
+      if (overlay.isConnected) chips.innerHTML = `<span class="chips-empty">Couldn't load active trace flags.</span>`;
+    }
+  };
+  const removeFlag = async (btn) => {
+    const id = btn.getAttribute("data-id");
+    const name = btn.getAttribute("data-name") || "that user";
+    btn.disabled = true; btn.classList.add("busy");
+    try {
+      const r = await api("/api/traceflag", {
+        method: "DELETE", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ org: state.org, userId: id }),
+      });
+      if (r.deleted) toast("Debug logging turned off", r.user, "success");
+      else toast("No active trace flag", `Nothing to remove for ${name}.`, "info");
+      await renderChips();
+    } catch (e) {
+      btn.disabled = false; btn.classList.remove("busy");
+      toast("Couldn't remove the trace flag", e.message, "error");
+    }
+  };
+  renderChips();
+
+  // Debounced user search. Min 2 chars; clicking a result sets the target.
+  let searchTimer = null, searchSeq = 0;
+  const hideResults = () => { results.classList.add("hidden"); results.innerHTML = ""; };
+  const runSearch = async (q) => {
+    const seq = ++searchSeq;
+    try {
+      const r = await api(`/api/users?org=${encodeURIComponent(state.org)}&q=${encodeURIComponent(q)}`);
+      if (!overlay.isConnected || seq !== searchSeq) return; // stale response
+      const users = r.users || [];
+      if (!users.length) { results.innerHTML = `<div class="lookup-empty">No matching active users.</div>`; results.classList.remove("hidden"); return; }
+      results.innerHTML = users.map((u) =>
+        `<button type="button" class="lookup-item" data-id="${escapeHtml(u.id)}" data-name="${escapeHtml(u.name)}">`
+        + `<span class="li-name">${escapeHtml(u.name)}</span>`
+        + `<span class="li-sub">${escapeHtml(u.username || u.email || "")}</span>`
+        + `</button>`).join("");
+      results.classList.remove("hidden");
+      results.querySelectorAll(".lookup-item").forEach((item) => item.addEventListener("click", () => {
+        const name = item.getAttribute("data-name");
+        setTarget(item.getAttribute("data-id"), name);
+        search.value = name; showClear(true); hideResults(); dur.focus(); // keep the chosen target visible
+      }));
+    } catch (e) {
+      if (overlay.isConnected && seq === searchSeq) { results.innerHTML = `<div class="lookup-empty">${escapeHtml(e.message)}</div>`; results.classList.remove("hidden"); }
+    }
+  };
+  search.addEventListener("input", () => {
+    const q = search.value.trim();
+    // Editing the field abandons any previously picked target; empty = yourself.
+    if (target.id && q !== target.name) setTarget(null, "your user");
+    clearTimeout(searchTimer);
+    if (q.length < 2) { hideResults(); return; }
+    searchTimer = setTimeout(() => runSearch(q), 250);
+  });
+
+  overlay.querySelector("#traceCancel").addEventListener("click", close);
+  overlay.addEventListener("click", (e) => { if (e.target === overlay) close(); });
+  const minutesOf = () => {
+    const v = parseInt(dur.value, 10);
+    if (!Number.isFinite(v) || v < 1) return null;
+    return unit.value === "hour" ? v * 60 : v;
+  };
+  const validate = () => {
+    const m = minutesOf();
+    const ok = m != null && m <= 24 * 60;
+    go.disabled = !ok;
+    note.textContent = m != null && m > 24 * 60
+      ? "That's over the 24-hour limit — choose a shorter duration."
+      : "Salesforce caps a trace flag at 24 hours.";
+  };
+  dur.addEventListener("input", validate);
+  unit.addEventListener("change", validate);
+  dur.addEventListener("keydown", (e) => { if (e.key === "Enter" && !go.disabled) go.click(); });
+  const submit = async () => {
+    const minutes = minutesOf();
+    if (minutes == null) return;
+    go.disabled = true; go.textContent = "Creating…";
+    try {
+      const r = await api("/api/traceflag", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ org: state.org, minutes, userId: target.id || undefined }),
+      });
+      // Stay open — add/refresh the chip so multiple users can be set in a row.
+      const until = r.expiration ? new Date(r.expiration).toLocaleTimeString() : "";
+      if (r.alreadyActive) {
+        toast("Already active", `${r.user}${until ? ` — until ${until}` : ""}`, "info");
+      } else {
+        toast("Debug logging enabled", `${r.user}${until ? ` — until ${until}` : ""}`, "success");
+      }
+      await renderChips();
+      go.disabled = false; go.textContent = "Create";
+      // Make sure the resulting logs stream in without a manual fetch.
+      if (state.org) { if (!state.auto) setAuto(true); else startCapture(); }
+    } catch (e) {
+      go.disabled = false; go.textContent = "Create";
+      toast("Couldn't enable debug logging", e.message, "error");
+    }
+  };
+  go.addEventListener("click", submit);
+  setTimeout(() => { search.focus(); }, 0);
+}
+
 // --- Salesforce knowledge search across MCP servers (Slack / OrgCS / GUS) ---
 const SF_MCP_KEYS = ["orgcs", "slack", "gus"];
 
@@ -1987,15 +2447,26 @@ function bind() {
   els.autoBtn.addEventListener("click", () => setAuto(!state.auto));
   els.uploadBtn.addEventListener("click", () => els.fileInput.click());
   els.fileInput.addEventListener("change", (e) => { addFiles(e.target.files); e.target.value = ""; });
-  // Picking an org no longer auto-fetches — the user chooses a time window and
-  // clicks "Fetch logs". This keeps us from pulling the whole org unasked.
+  // Picking an org begins auto-capture immediately when auto-refresh is ON: we
+  // start polling the org so any new logs stream in on their own — no "Fetch"
+  // click needed. (This only reads existing logs; it never enables debug
+  // logging. Use "Start debug logging" for that.) With auto OFF we fall back to
+  // the manual time-window + Fetch flow.
   els.orgSelect.addEventListener("change", () => {
     state.org = els.orgSelect.value;
     state.fetched = false;
     stopPolling();
     resetView();
     loadWhoami();
-    if (state.org) status("Choose a time window and click “Fetch logs”.", "info");
+    if (state.org && state.auto) {
+      state.fetched = true;
+      startCapture(); // auto-capture: refresh now + keep polling (also paints the indicator)
+    } else if (state.org) {
+      refreshTraceStatus(); // still show the red/green debug-log status
+      status("Choose a time window and click “Fetch logs”.", "info");
+    } else {
+      setTraceIndicator(false); // no org — reset to red
+    }
   });
   els.fetchBtn.addEventListener("click", fetchLogsClicked);
   els.fetchAllBtn.addEventListener("click", () => fetchLogsClicked({ all: true }));
@@ -2015,6 +2486,7 @@ function bind() {
   els.compareNext.addEventListener("click", compareNext);
   els.compareRun.addEventListener("click", compareRun);
   els.onSaveBtn.addEventListener("click", openOnSave);
+  els.traceBtn.addEventListener("click", openTraceFlag);
   els.sfBtn.addEventListener("click", openSfModal);
   els.viewRaw.addEventListener("click", () => setViewMode("raw"));
   els.viewProfile.addEventListener("click", () => setViewMode("profile"));

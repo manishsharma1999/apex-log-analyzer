@@ -29,6 +29,10 @@
           <span class="pick-label">Org</span>
           <select id="orgSelect"></select>
         </label>
+        <button id="traceBtn" class="trace-btn hidden" title="Debug logging status for your user. Red = no active trace flag; green = a trace flag is active. Click to set one (you choose the duration).">
+          <span class="trace-dot" id="traceDot" aria-hidden="true"></span>
+          <span class="trace-label">Set Debug Log</span>
+        </button>
         <span class="spacer"></span>
         <button id="onSaveBtn" class="hidden" title="See what automation fires when an object is saved (order of execution)">🔀 Order of Execution</button>
         <button id="sfBtn" class="sf-btn hidden" title="Search Slack / OrgCS / GUS for prior art on the errors in the selected log(s)">☁ Salesforce</button>
@@ -55,8 +59,13 @@
           <span id="logCount" class="count"></span>
         </div>
         <div class="list-header controls" id="controlsRow">
-          <label class="fetch-label hidden" id="fetchLabel" title="Only fetch logs created in the last N minutes — keeps you from pulling the whole org">Last
-            <input id="windowMin" type="number" min="1" step="1" value="2" inputmode="numeric" title="Time window in minutes" /> min
+          <label class="fetch-label hidden" id="fetchLabel" title="Only fetch logs created in the last N minutes/hours/days — keeps you from pulling the whole org">Last
+            <input id="windowMin" type="number" min="1" step="1" value="2" inputmode="numeric" title="Time window" />
+            <select id="windowUnit" title="Time window unit">
+              <option value="min" selected>min</option>
+              <option value="hour">hours</option>
+              <option value="day">days</option>
+            </select>
           </label>
           <button id="fetchBtn" class="primary hidden" title="Fetch logs from the selected org for this time window">↻ Fetch logs</button>
           <button id="fetchAllBtn" class="hidden" title="Fetch every log from the org, ignoring the time window">Fetch all</button>
