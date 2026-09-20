@@ -209,6 +209,34 @@ async function getLogBody(apiHost, id) {
   return text;
 }
 
+// Permanently delete ApexLog records from the org. Explicit and user-initiated
+// only (the row trash icon / "Delete" button, behind a confirm). Deletes one at
+// a time so a single bad/locked id surfaces its own error instead of failing the
+// whole batch, and drops any cached body so a re-fetch can't serve a dead log.
+async function deleteLogs(apiHost, ids) {
+  const list = [...new Set((Array.isArray(ids) ? ids : [])
+    .map((id) => String(id || ""))
+    .filter((id) => /^[0-9A-Za-z]{15,18}$/.test(id)))];
+  if (!list.length) throw new Error("No valid log ids to delete.");
+  const s = await getSession(apiHost);
+  let deleted = 0;
+  const errors = [];
+  for (const id of list) {
+    try {
+      await toolingDelete(s, "ApexLog", id);
+      deleted++;
+      const key = `${apiHost}:${id}`;
+      if (bodyCache.has(key)) {
+        bodyCacheBytes -= (bodyCache.get(key) || "").length;
+        bodyCache.delete(key);
+      }
+    } catch (e) {
+      errors.push({ id, message: e.message });
+    }
+  }
+  return { deleted, errors };
+}
+
 // Identity of the user whose Chrome session we're using — so the operator can
 // always see which Salesforce user this tool is acting as. Read-only GET to the
 // standard OpenID Connect userinfo endpoint. Cached per host (identity is stable
@@ -1197,6 +1225,10 @@ const server = http.createServer(async (req, res) => {
       return sendJson(res, 200, { text: await sfAnalyze({ enabled, context, logText }) });
     }
     if (p === "/api/diag") return sendJson(res, 200, diagnose());
+    if (p === "/api/logs" && req.method === "DELETE") {
+      const { org, ids } = await readBody(req);
+      return sendJson(res, 200, await deleteLogs(org, ids));
+    }
     if (p === "/api/logs") return sendJson(res, 200, { records: await listLogs(u.searchParams.get("org"), u.searchParams.get("mins")) });
     if (p === "/api/search") return sendJson(res, 200, { matches: await searchLogs(u.searchParams.get("org"), u.searchParams.get("q") || "") });
     if (p === "/api/logbody") {

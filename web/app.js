@@ -71,8 +71,8 @@ const NEW_BADGE_MS = 30 * 60 * 1000;
 const $ = (id) => document.getElementById(id);
 const els = {};
 [
-  "orgSelect", "autoBtn", "uploadBtn", "fileInput", "onSaveBtn", "sfBtn", "traceBtn", "modelSelect", "currentUser", "statusBar",
-  "search", "windowMin", "windowUnit", "fetchBtn", "fetchAllBtn", "searchInfo", "logCount", "logRows", "listEmpty", "listPane", "dropHint",
+  "orgSelect", "autoBtn", "uploadBtn", "fileInput", "onSaveBtn", "sfBtn", "traceBtn", "modelSelect", "currentUser", "toastWrap",
+  "search", "windowMin", "windowUnit", "fetchBtn", "fetchAllBtn", "deleteLogsBtn", "searchInfo", "logCount", "logRows", "listEmpty", "listPane", "dropHint",
   "selectAll", "bulkBar", "selCount", "analyzeSelected", "downloadSelected", "compareBtn", "codeHealthBtn", "matchInfo",
   "compareBar", "compareStep", "compareCancel", "compareNext", "compareRun",
   "viewRaw", "viewProfile", "viewFlame", "viewQueries", "viewIssues", "viewVars",
@@ -83,6 +83,10 @@ const els = {};
   "controlsRow", "emptyHero", "heroActions", "heroOrgSlot", "heroUploadSlot", "brand",
   "analysisPanel", "analysisTitle", "analysisContent", "closeAnalysis", "exportAnalysis", "chatInput", "chatSend",
 ].forEach((id) => (els[id] = $(id)));
+
+// Trash/delete glyph, shared by the per-row icon and the toolbar Delete button
+// so they're always the same symbol. Inherits color via currentColor.
+const DEL_SVG = '<svg class="dl-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>';
 
 // Cap on how much text we highlight in the viewer. Beyond this we still show
 // the whole log (as fast plain text) but skip per-match DOM so huge logs
@@ -106,11 +110,83 @@ const ROW_RENDER_CAP = 300;
 const BIG_INDEX_BYTES = 4 * 1024 * 1024;
 
 // --- helpers --------------------------------------------------------------
-function status(msg, kind = "info") {
-  els.statusBar.textContent = msg;
-  els.statusBar.className = `status ${kind}`;
+// All app notices are floating toasts in the top-center strip (the old blue
+// status bar's slot). Two flavours share the look:
+//   • status()  — the single, in-place "current activity" line. It updates one
+//     reusable toast (progress → outcome replaces cleanly, no stacking), exactly
+//     like the old status bar did. Info/progress persists until replaced/cleared;
+//     an outcome (success/warn/error) fades on its own.
+//   • toast()   — a discrete, stacking event notice (log deleted, logs captured,
+//     org connected, …) that auto-dismisses.
+const TOAST_ICON = { success: "✓", error: "⚠", warn: "⚠", info: "ℹ" };
+const TOAST_TTL = (kind) => (kind === "error" ? 6000 : kind === "info" ? 5000 : 3600);
+function buildToast(message, kind, title) {
+  const el = document.createElement("div");
+  el.className = `toast ${kind}`;
+  el.innerHTML = `
+    <span class="toast-ico">${TOAST_ICON[kind] || TOAST_ICON.info}</span>
+    <span class="toast-body">${title ? `<span class="toast-title"></span>` : ""}<span class="toast-msg"></span></span>
+    <button class="toast-close" title="Dismiss" aria-label="Dismiss">×</button>`;
+  if (title) el.querySelector(".toast-title").textContent = title;
+  el.querySelector(".toast-msg").textContent = message;
+  return el;
 }
-function clearStatus() { els.statusBar.className = "status hidden"; }
+function dismissToast(el) {
+  if (!el || el.dataset.leaving) return;
+  el.dataset.leaving = "1";
+  clearTimeout(el._timer);
+  el.classList.add("leaving");
+  el.addEventListener("animationend", () => el.remove(), { once: true });
+  setTimeout(() => el.remove(), 400); // fallback if animationend doesn't fire
+}
+// Center the toast stack in the blank band between the header's bottom line and
+// the first visible content row, so it has an equal gap above and below (not
+// stuck to the top). Measured live — survives the banner wrapping, the search
+// row appearing, window resizes, etc. — instead of a brittle hardcoded pixel.
+function centerToastBand() {
+  if (!els.toastWrap) return;
+  // Sit in the header row (logo / Org / Set Debug Log … Order of Execution),
+  // centered on that row's own vertical middle so the toast floats in its empty
+  // center — vertically in line with those controls, not in the row below.
+  const topbar = document.querySelector(".topbar");
+  if (!topbar) return;
+  const r = topbar.getBoundingClientRect();
+  els.toastWrap.style.top = `${Math.round((r.top + r.bottom) / 2)}px`;
+}
+window.addEventListener("resize", centerToastBand);
+function toast(message, kind = "info", title = "") {
+  if (!els.toastWrap || !message) return;
+  centerToastBand();
+  const el = buildToast(message, kind, title);
+  el.querySelector(".toast-close").addEventListener("click", () => dismissToast(el));
+  els.toastWrap.appendChild(el);
+  el._timer = setTimeout(() => dismissToast(el), TOAST_TTL(kind));
+  // Keep the stack short — but never evict the persistent status line.
+  const evictable = [...els.toastWrap.children].filter((c) => !c.classList.contains("toast-status") && !c.dataset.leaving);
+  while (evictable.length > 4) dismissToast(evictable.shift());
+}
+let statusToast = null;
+function status(msg, kind = "info") {
+  if (!msg) return clearStatus();
+  if (!els.toastWrap) return;
+  centerToastBand();
+  if (!statusToast || !statusToast.isConnected || statusToast.dataset.leaving) {
+    statusToast = buildToast(msg, kind, "");
+    statusToast.classList.add("toast-status");
+    statusToast.querySelector(".toast-close").addEventListener("click", clearStatus);
+    els.toastWrap.appendChild(statusToast);
+  } else {
+    statusToast.className = `toast toast-status ${kind}`;
+    statusToast.querySelector(".toast-ico").textContent = TOAST_ICON[kind] || TOAST_ICON.info;
+    statusToast.querySelector(".toast-msg").textContent = msg;
+  }
+  clearTimeout(statusToast._timer);
+  // Progress/info stays put until something replaces or clears it; an outcome fades.
+  if (kind !== "info") statusToast._timer = setTimeout(clearStatus, TOAST_TTL(kind));
+}
+function clearStatus() {
+  if (statusToast) { dismissToast(statusToast); statusToast = null; }
+}
 function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, (c) =>
     ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -207,10 +283,11 @@ async function loadOrgs({ fresh = false } = {}) {
 // Show which Salesforce user this tool is acting as (from the Chrome session),
 // so the operator can always confirm the identity in the top-right corner.
 let whoamiSeq = 0;
+let lastWhoamiKey = null; // org::user we last announced, so we toast a login once
 async function loadWhoami() {
   const org = els.orgSelect.value;
   const seq = ++whoamiSeq;
-  if (!org) { els.currentUser.classList.add("hidden"); els.currentUser.innerHTML = ""; return; }
+  if (!org) { els.currentUser.classList.add("hidden"); els.currentUser.innerHTML = ""; lastWhoamiKey = null; return; }
   try {
     const info = await api(`/api/whoami?org=${encodeURIComponent(org)}`);
     if (seq !== whoamiSeq) return; // a newer org selection won the race
@@ -237,15 +314,27 @@ async function loadWhoami() {
       } catch { status("Couldn't copy — clipboard blocked by the browser.", "error"); }
     });
     els.currentUser.classList.remove("hidden");
+    // Announce the connected identity once per org/user — not on every poll or
+    // re-render. Switching org or user re-announces; a plain refresh doesn't.
+    const idKey = `${org}::${info.username || name}`;
+    if (idKey !== lastWhoamiKey) {
+      toast(`${name}${uname ? ` (${uname})` : ""}`, "success", "Connected to org");
+      lastWhoamiKey = idKey;
+    }
   } catch {
     if (seq !== whoamiSeq) return;
     els.currentUser.classList.add("hidden");
     els.currentUser.innerHTML = "";
+    lastWhoamiKey = null;
   }
 }
 
 // --- log list -------------------------------------------------------------
-async function refreshLogs({ silent } = {}) {
+// `silent`  = background poll: no progress line, no outcome toast (only a
+//             discrete "N new logs captured" toast when fresh logs arrive).
+// `announce` = user clicked Fetch logs / Fetch all: report the outcome once
+//             (N loaded / no new logs / no logs yet) as an auto-dismissing toast.
+async function refreshLogs({ silent, announce } = {}) {
   const org = els.orgSelect.value;
   if (!org) { applyFilter(); return; }
   state.org = org;
@@ -264,6 +353,12 @@ async function refreshLogs({ silent } = {}) {
     // disappear just because it aged out of the "last N minutes" window on a
     // later poll (or a narrower fetch). Union by Id — a newer record wins, so a
     // log's finalized Status/Duration updates in place — then sort newest first.
+    // Which fetched records are genuinely NEW to the list (not already shown)?
+    // This is the accurate count to report on an explicit fetch — it counts
+    // everything added, including older logs surfaced by "Fetch all", unlike
+    // `arrived` (which is only the fresh-within-window auto-capture set).
+    const hadIds = new Set(state.logs.map((r) => r.Id));
+    const addedCount = records.reduce((n, r) => n + (r.Id && !hadIds.has(r.Id) ? 1 : 0), 0);
     const byId = new Map(state.logs.map((r) => [r.Id, r]));
     for (const r of records) byId.set(r.Id, r);
     const merged = [...byId.values()].sort((a, b) => {
@@ -301,6 +396,9 @@ async function refreshLogs({ silent } = {}) {
       baselineLoaded = true; // establish the baseline without badging anything
     } else {
       for (const r of arrived) newRowIds.add(r.Id); // union — keep prior NEW rows
+      // Background auto-refresh announces fresh arrivals here; an explicit fetch
+      // reports its own outcome below (see `announce`), so don't double-toast.
+      if (silent && arrived.length) toast(`${arrived.length} new log${arrived.length === 1 ? "" : "s"} captured`, "info");
     }
     // Advance the high-water mark past everything in this response (baseline
     // included) so the next refresh measures "newer than this".
@@ -312,9 +410,16 @@ async function refreshLogs({ silent } = {}) {
     applyFilter();
     prefetchBodies();                    // warm the in-memory index in the background
     if (state.query.trim()) searchInstant(); // refresh content hits for new logs
-    if (!silent) {
-      if (!records.length && !state.uploads.length) status("No logs yet. Perform actions in the org — new logs appear automatically.", "info");
-      else clearStatus();
+    if (!silent) clearStatus(); // drop the "Loading logs…" progress line
+    if (announce) {
+      // Report against the whole displayed list — merged org logs + uploads —
+      // NOT this single fetch's raw batch. A narrow "Fetch logs (last 2 min)"
+      // can return 0 records while 30 logs are on screen; that is "no new logs",
+      // never "no logs yet". All three outcomes auto-dismiss.
+      const total = state.logs.length + state.uploads.length;
+      if (total === 0) toast("No logs yet. Perform actions in the org — new logs appear automatically.", "info");
+      else if (addedCount > 0) toast(`${addedCount} new log${addedCount === 1 ? "" : "s"} loaded`, "success");
+      else toast("No new logs", "info");
     }
   } catch (e) {
     // A one-off blip during background polling (dropped Wi-Fi, a transient 5xx)
@@ -344,13 +449,13 @@ function stopPolling() {
   els.autoBtn.classList.remove("pulse");
 }
 
-async function startCapture() {
+async function startCapture({ announce = false } = {}) {
   const org = els.orgSelect.value;
   if (!org) return;
   state.org = org;
   loadWhoami(); // show which SF user this session belongs to (fire-and-forget)
   refreshTraceStatus(); // paint the red/green debug-log indicator (read-only)
-  await refreshLogs();
+  await refreshLogs({ announce });
   startPolling();
 }
 
@@ -367,7 +472,7 @@ function fetchLogsClicked({ all = false } = {}) {
     state.windowMin = Number.isFinite(v) && v > 0 ? v * mult : 0;
   }
   state.fetched = true;
-  startCapture();
+  startCapture({ announce: true }); // user asked — report the outcome as a toast
 }
 
 function setAuto(on) {
@@ -652,6 +757,10 @@ function updateChrome() {
   if (els.fetchLabel) els.fetchLabel.classList.toggle("hidden", !hasOrg);
   if (els.fetchBtn) els.fetchBtn.classList.toggle("hidden", !hasOrg);
   if (els.fetchAllBtn) els.fetchAllBtn.classList.toggle("hidden", !hasOrg);
+  // Delete sits with the fetch controls; it's useful wherever there are logs to
+  // act on (org logs or uploaded files). Its label/disabled state is driven by
+  // the current selection in updateBulkBar().
+  if (els.deleteLogsBtn) els.deleteLogsBtn.classList.toggle("hidden", !(hasOrg || hasLogs));
   if (els.ctlSep) els.ctlSep.classList.toggle("hidden", !hasOrg);
   if (els.autoBtn) els.autoBtn.classList.toggle("hidden", !hasOrg);
   // Model picker is irrelevant until there's a log to analyze; table header is
@@ -738,7 +847,7 @@ function renderRows() {
       <td><span class="status-pill ${pill}">${escapeHtml(it.status)}</span></td>
       <td class="dur">${it.duration != null ? it.duration.toLocaleString() : ""}</td>
       <td class="size">${fmtSize(it.size)}</td>
-      <td class="dl"><button class="icon-btn" title="Download this log as .log"><svg class="dl-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="8 17 12 21 16 17"/><line x1="12" y1="12" x2="12" y2="21"/><path d="M20.88 18.09A5 5 0 0 0 18 9h-1.26A8 8 0 1 0 3 16.29"/></svg></button></td>`;
+      <td class="dl"><button class="icon-btn dl-btn" title="Download this log as .log"><svg class="dl-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="8 17 12 21 16 17"/><line x1="12" y1="12" x2="12" y2="21"/><path d="M20.88 18.09A5 5 0 0 0 18 9h-1.26A8 8 0 1 0 3 16.29"/></svg></button><button class="icon-btn del-btn" title="${it.kind === "upload" ? "Remove this file from the list" : "Delete this log from the org"}">${DEL_SVG}</button></td>`;
     // The debug-log label row opens the log only when there are no search-result
     // preview rows below it; during search you navigate via the preview rows.
     if (!hasHits) {
@@ -747,8 +856,10 @@ function renderRows() {
     const cb = tr.querySelector(".chk input");
     cb.addEventListener("click", (e) => e.stopPropagation());
     cb.addEventListener("change", (e) => toggleCheck(it.id, e.target.checked));
-    const dl = tr.querySelector(".dl button");
+    const dl = tr.querySelector(".dl .dl-btn");
     dl.addEventListener("click", (e) => { e.stopPropagation(); downloadLog(it.id); });
+    const del = tr.querySelector(".dl .del-btn");
+    del.addEventListener("click", (e) => { e.stopPropagation(); deleteItems([it.id]); });
     // Drop-in animation: only for rows we haven't shown before (first load, or a
     // new log arriving via auto-refresh). Seen rows render instantly so the list
     // doesn't flicker on every poll. Stagger is capped so a big first batch
@@ -843,6 +954,17 @@ function updateBulkBar() {
   els.compareBtn.disabled = busy;
   // Download appears only for a multi-selection (a single log uses its per-row ⬇ icon).
   els.downloadSelected.classList.toggle("hidden", n < 2);
+  // Delete button (toolbar, next to Fetch all): label mirrors the current target —
+  // the ticked set, or the single open log. Disabled (but visible) when nothing's
+  // targeted, so it's discoverable without being a live hazard.
+  if (els.deleteLogsBtn) {
+    els.deleteLogsBtn.disabled = target === 0 || busy;
+    const label = target === 0 ? "Delete"
+      : n >= 2 ? `Delete ${n} selected logs`
+      : "Delete selected log";
+    // Same trash glyph as the per-row icon (inline SVG), not the emoji.
+    els.deleteLogsBtn.innerHTML = `${DEL_SVG}<span>${label}</span>`;
+  }
 }
 function syncSelectAll() {
   const ids = state.filtered.map((i) => i.id);
@@ -924,6 +1046,95 @@ async function downloadSelected() {
   }
   status(`Downloaded ${ids.length} log${ids.length === 1 ? "" : "s"}.`, "success");
   setTimeout(clearStatus, 2000);
+}
+
+// --- delete ---------------------------------------------------------------
+// A small confirm modal, styled like the other popups. Resolves true/false.
+function confirmDialog({ title, message, confirmLabel = "Delete", danger = true }) {
+  return new Promise((resolve) => {
+    const overlay = document.createElement("div");
+    overlay.className = "modal";
+    overlay.innerHTML = `
+      <div class="modal-card">
+        <h2>${escapeHtml(title)}</h2>
+        <p class="hint">${escapeHtml(message)}</p>
+        <div class="modal-actions">
+          <button id="cfCancel">Cancel</button>
+          <button id="cfGo" class="${danger ? "danger" : "primary"}">${escapeHtml(confirmLabel)}</button>
+        </div>
+      </div>`;
+    document.body.appendChild(overlay);
+    const done = (v) => { document.removeEventListener("keydown", onKey); overlay.remove(); resolve(v); };
+    const onKey = (e) => { if (e.key === "Escape") done(false); };
+    document.addEventListener("keydown", onKey);
+    overlay.querySelector("#cfCancel").addEventListener("click", () => done(false));
+    overlay.querySelector("#cfGo").addEventListener("click", () => done(true));
+    overlay.addEventListener("click", (e) => { if (e.target === overlay) done(false); });
+    overlay.querySelector("#cfGo").focus();
+  });
+}
+
+// Delete a set of items. Org logs (07L…) are permanently deleted from Salesforce
+// via the API; uploaded files are only removed from this in-memory list (they
+// were never in the org). Always confirms first, since org deletion can't be undone.
+async function deleteItems(ids) {
+  const uniq = [...new Set((ids || []).filter(Boolean))];
+  if (!uniq.length) return;
+  const orgIds = uniq.filter((id) => !findUpload(id));
+  const upIds = uniq.filter((id) => findUpload(id));
+  const total = uniq.length;
+
+  let title, message, confirmLabel;
+  if (orgIds.length) {
+    title = "Delete logs from the org?";
+    message = `This permanently deletes ${orgIds.length} log${orgIds.length === 1 ? "" : "s"} from the org via the Salesforce API — this can't be undone.`
+      + (upIds.length ? ` ${upIds.length} uploaded file${upIds.length === 1 ? "" : "s"} will also be removed from this list.` : "");
+    confirmLabel = total === 1 ? "Delete log" : `Delete ${total} logs`;
+  } else {
+    title = "Remove uploaded file" + (upIds.length === 1 ? "?" : "s?");
+    message = `Remove ${upIds.length} uploaded file${upIds.length === 1 ? "" : "s"} from the list? They aren't stored in the org, so this only clears them here.`;
+    confirmLabel = upIds.length === 1 ? "Remove file" : `Remove ${upIds.length} files`;
+  }
+  if (!(await confirmDialog({ title, message, confirmLabel }))) return;
+
+  // Uploaded files: drop from the local list immediately (nothing to call).
+  if (upIds.length) state.uploads = state.uploads.filter((u) => !upIds.includes(u.id));
+
+  let serverErr = null, deletedOrg = 0;
+  if (orgIds.length) {
+    status(`Deleting ${orgIds.length} log${orgIds.length === 1 ? "" : "s"} from the org…`, "info");
+    try {
+      const { deleted = 0, errors = [] } = await api("/api/logs", {
+        method: "DELETE", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ org: state.org, ids: orgIds }),
+      });
+      deletedOrg = deleted;
+      const failedIds = new Set(errors.map((e) => e.id));
+      // Drop only the rows the org confirmed gone; anything that errored stays.
+      state.logs = state.logs.filter((l) => !(orgIds.includes(l.Id) && !failedIds.has(l.Id)));
+      if (errors.length) serverErr = `${errors.length} log${errors.length === 1 ? "" : "s"} could not be deleted: ${errors[0].message}`;
+    } catch (e) {
+      serverErr = e.message;
+    }
+  }
+
+  // Clear selection + close the viewer for anything that's now gone.
+  const stillExists = (id) => !!findUpload(id) || state.logs.some((l) => l.Id === id);
+  for (const id of uniq) if (!stillExists(id)) state.checked.delete(id);
+  if (state.selectedId != null && !stillExists(state.selectedId)) {
+    state.selectedId = null;
+    state.logBody = "";
+    state.model = null;
+    state.modelForId = null;
+  }
+  applyFilter();
+  updateBulkBar();
+
+  if (serverErr) { status(`Delete failed: ${serverErr}`, "error"); return; }
+  const parts = [];
+  if (deletedOrg) parts.push(`Deleted ${deletedOrg} log${deletedOrg === 1 ? "" : "s"} from the org`);
+  if (upIds.length) parts.push(`removed ${upIds.length} file${upIds.length === 1 ? "" : "s"}`);
+  status(parts.join(", ") + ".", "success");
 }
 
 // Clear everything tied to the previously-selected org (kept: uploaded files,
@@ -2480,6 +2691,12 @@ function bind() {
   });
   els.analyzeSelected.addEventListener("click", analyzeSelected);
   els.downloadSelected.addEventListener("click", downloadSelected);
+  els.deleteLogsBtn.addEventListener("click", () => {
+    // Act on the ticked set, or the single open log if nothing's ticked.
+    const ids = state.checked.size ? [...state.checked]
+      : (state.selectedId != null ? [state.selectedId] : []);
+    deleteItems(ids);
+  });
   els.codeHealthBtn.addEventListener("click", runCodeHealth);
   els.compareBtn.addEventListener("click", enterCompareMode);
   els.compareCancel.addEventListener("click", exitCompareMode);

@@ -48,7 +48,7 @@
       </div>
     </header>
 
-    <div id="statusBar" class="status hidden"></div>
+    <div id="toastWrap" class="toast-wrap" aria-live="polite"></div>
 
     <main class="layout solo" id="layout">
       <section class="pane list-pane" id="listPane">
@@ -69,6 +69,7 @@
           </label>
           <button id="fetchBtn" class="primary hidden" title="Fetch logs from the selected org for this time window">↻ Fetch logs</button>
           <button id="fetchAllBtn" class="hidden" title="Fetch every log from the org, ignoring the time window">Fetch all</button>
+          <button id="deleteLogsBtn" class="danger hidden" title="Delete the selected log(s) from the org — permanent" disabled>🗑 Delete</button>
           <span class="ctl-sep hidden" id="ctlSep"></span>
           <button id="autoBtn" title="Auto-refresh the log list every few seconds (does not create trace flags — manage debug logging yourself in Setup)" class="on hidden">● Auto-refresh: ON</button>
           <span class="spacer"></span>

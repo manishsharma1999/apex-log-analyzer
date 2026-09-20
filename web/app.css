@@ -372,15 +372,55 @@ button.primary:hover:not(:disabled) { background: var(--accent-grad); color: #ff
 .pulse { animation: pulse 1.2s ease-in-out infinite; }
 @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.4; } }
 
-.status {
-  padding: 8px 16px;
-  font-size: 12px;
-  border-bottom: 1px solid var(--border);
-}
-.status.info { background: #14293f; color: #9dc7ff; }
-.status.error { background: #3a1d1d; color: #ff9a92; }
-.status.success { background: #10331a; color: #8ee39e; }
 .hidden { display: none !important; }
+
+/* Floating toasts — the notification strip that replaced the old blue status
+   bar. Sits centered in the blank band just below the header (where the status
+   bar used to render), floating over the content so it never shifts layout. */
+.toast-wrap {
+  /* Floats over the blank band between the header's bottom line and the first
+     content row. `top` is set at runtime (centerToastBand) to the exact middle
+     of that gap and we pull back by half our own height (translate -50% Y), so
+     the toast always has an equal gap above and below — never stuck to a line.
+     The 100px here is only a pre-JS fallback. */
+  position: fixed; top: 100px; left: 50%; transform: translate(-50%, -50%);
+  z-index: 90; display: flex; flex-direction: column; gap: 8px;
+  align-items: center; width: max-content; max-width: min(90vw, 560px);
+  pointer-events: none;
+}
+.toast {
+  pointer-events: auto;
+  display: flex; align-items: flex-start; gap: 9px;
+  min-width: 240px; max-width: 100%;
+  padding: 9px 12px 9px 13px;
+  border-radius: 10px; border: 1px solid var(--border); border-left-width: 3px;
+  background: var(--bg-2); color: var(--text);
+  box-shadow: 0 10px 30px rgba(0,0,0,0.38);
+  font-size: 12.5px; line-height: 1.35;
+  animation: toastIn .26s cubic-bezier(.2,.85,.25,1);
+}
+:root[data-theme="light"] .toast { box-shadow: 0 10px 28px rgba(20,30,50,0.16); }
+.toast.leaving { animation: toastOut .2s ease forwards; }
+.toast .toast-ico { flex: 0 0 auto; font-weight: 700; margin-top: 0.5px; }
+.toast .toast-body { flex: 1 1 auto; min-width: 0; }
+.toast .toast-title { display: block; font-weight: 600; margin-bottom: 1px; }
+.toast .toast-msg { display: block; color: var(--muted); word-break: break-word; }
+.toast .toast-close {
+  flex: 0 0 auto; background: none; border: none; cursor: pointer;
+  color: var(--muted); font-size: 15px; line-height: 1; padding: 0 1px; margin: -1px -2px 0 0;
+}
+.toast .toast-close:hover { color: var(--text); }
+.toast.info { border-left-color: var(--accent); }
+.toast.info .toast-ico { color: var(--accent); }
+.toast.success { border-left-color: var(--green); }
+.toast.success .toast-ico { color: var(--green); }
+.toast.error { border-left-color: var(--red); }
+.toast.error .toast-ico { color: var(--red); }
+.toast.warn { border-left-color: var(--amber); }
+.toast.warn .toast-ico { color: var(--amber); }
+@keyframes toastIn { from { opacity: 0; transform: translateY(-10px) scale(.98); } to { opacity: 1; transform: none; } }
+@keyframes toastOut { to { opacity: 0; transform: translateY(-8px) scale(.98); } }
+@media (prefers-reduced-motion: reduce) { .toast { animation: none; } .toast.leaving { animation: none; } }
 
 .layout { flex: 1; display: flex; min-height: 0; }
 .pane { display: flex; flex-direction: column; min-height: 0; }
@@ -401,7 +441,12 @@ button.primary:hover:not(:disabled) { background: var(--accent-grad); color: #ff
 /* Search gets its own full-width row; the acquisition controls (fetch window,
    fetch buttons, auto-refresh, upload) live together on the row below it. */
 .search-row { border-bottom: none; padding-bottom: 4px; }
-.list-header.controls { border-top: none; padding-top: 4px; flex-wrap: wrap; }
+.list-header.controls { border-top: none; flex-wrap: wrap; }
+/* Only pull the controls up tight when a visible search row sits right above it
+   (4px + the search row's 4px bottom = one normal gap). With the search row
+   hidden, the controls keep their full symmetric padding so the buttons are
+   vertically centered — equal gap to the top and bottom lines. */
+#searchRow:not(.hidden) + #controlsRow { padding-top: 4px; }
 .list-header.controls button { flex: 0 0 auto; white-space: nowrap; }
 .fetch-label { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 13px; white-space: nowrap; }
 .fetch-label input { flex: 0 0 auto; width: 56px; text-align: center; -moz-appearance: textfield; appearance: textfield; }
@@ -424,13 +469,18 @@ button.primary:hover:not(:disabled) { background: var(--accent-grad); color: #ff
 th.rownum, td.rownum { width: 20px; text-align: right; padding-left: 6px; padding-right: 3px; color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
 th.chk, td.chk { width: 22px; text-align: center; padding-left: 3px; padding-right: 1px; }
 td.chk input, th.chk input { cursor: pointer; width: 15px; height: 15px; vertical-align: middle; }
-th.dl, td.dl { width: 22px; text-align: center; padding-left: 1px; padding-right: 4px; }
+th.dl, td.dl { width: 46px; text-align: right; padding-left: 1px; padding-right: 4px; white-space: nowrap; }
+td.dl .icon-btn + .icon-btn { margin-left: 1px; }
 .icon-btn {
   background: none; border: none; padding: 2px 3px; border-radius: 4px;
   color: var(--muted); font-size: 13px; line-height: 1; cursor: pointer;
 }
 .icon-btn:hover { color: var(--accent); background: var(--bg-3); }
+.icon-btn.del-btn:hover { color: var(--red); }
 .dl-ico { width: 15px; height: 15px; display: block; }
+/* Toolbar Delete button: line up the trash glyph with its label. */
+#deleteLogsBtn { display: inline-flex; align-items: center; gap: 6px; }
+#deleteLogsBtn .dl-ico { width: 14px; height: 14px; }
 .status-pill.up { background: #2a2140; color: var(--accent-2); }
 /* One tile per matched log: the label row (log metadata) plus a strip of
    search-result preview rows below it, all reading as a single card. The label
@@ -918,10 +968,6 @@ tbody td { transition: background var(--t-fast); }
 /* Status pills a little more legible. */
 .status-pill { padding: 2px 9px; font-weight: 600; letter-spacing: 0.01em; }
 
-/* Status bar slides in rather than snapping. */
-.status { animation: slideDown 220ms var(--ease); }
-@keyframes slideDown { from { opacity: 0; transform: translateY(-6px); } to { opacity: 1; transform: none; } }
-
 /* Panes fade up on load for a polished first paint. */
 .list-pane, .viewer-pane { animation: fadeUp 320ms var(--ease) both; }
 .viewer-pane { animation-delay: 60ms; }
@@ -929,6 +975,7 @@ tbody td { transition: background var(--t-fast); }
 
 /* Bulk / compare bars slide down when they appear. */
 .list-header.sub:not(.hidden) { animation: slideDown 200ms var(--ease); }
+@keyframes slideDown { from { opacity: 0; transform: translateY(-6px); } to { opacity: 1; transform: none; } }
 
 /* Analysis panel + its content ease in. */
 .analysis:not(.hidden) { animation: fadeUp 260ms var(--ease); }
