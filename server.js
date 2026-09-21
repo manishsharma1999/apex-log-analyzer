@@ -132,18 +132,26 @@ async function rawFetch(session, urlPath, opts = {}) {
 // Only show orgs whose session actually works right now: a valid sid returns
 // 200 from /services/oauth2/userinfo; an expired/invalid one returns 401/403.
 // Cached ~60s per host so we don't re-check on every poll.
-const sessionOkCache = new Map(); // apiHost -> { at, ok }
+const sessionStatusCache = new Map(); // apiHost -> { at, st }
+// Classify a Chrome session against the org's REST API. Three outcomes:
+//   ok      — 200/403: the session works, so the org is usable.
+//   blocked — the sid is valid (Salesforce recognized it) but the API call is
+//             refused: an IP restriction (400 INSUFFICIENT_ACCESS "Access from
+//             current IP address is not allowed"), API disabled, etc. You're
+//             genuinely logged in — the org just can't be used from here, so we
+//             still list it and carry the exact Salesforce message to show on
+//             select, instead of silently hiding a valid login.
+//   dead    — 401/302/network: expired session or unreachable org; hidden as before.
 async function sessionActive(org, force = false) {
   const now = Date.now();
-  const cached = sessionOkCache.get(org.apiHost);
-  // Cache a live session for 60s (no need to re-check a known-good org every
-  // poll), but a "not valid" result for only ~4s: a just-logged-in org whose
-  // session was briefly invalid mid-login then shows up almost immediately
-  // instead of being hidden for a full minute. `force` (a user Refresh / tab
-  // focus) bypasses the cache entirely so a just-logged-OUT org disappears at
-  // once instead of lingering for the rest of its cached 60s.
-  if (!force && cached && now - cached.at < (cached.ok ? 60000 : 4000)) return cached.ok;
-  let ok = false;
+  const cached = sessionStatusCache.get(org.apiHost);
+  // Cache a working org 60s (no need to re-check a known-good org every poll),
+  // but a not-working one only ~4s: a just-logged-in org whose session was
+  // briefly invalid mid-login — or a blocked org whose IP was just whitelisted —
+  // recovers within a poll instead of lingering for a full minute. `force` (a
+  // user Refresh / tab focus) bypasses the cache entirely.
+  if (!force && cached && now - cached.at < (cached.st.ok ? 60000 : 4000)) return cached.st;
+  let st = { ok: false, blocked: false, reason: "" };
   try {
     // Hit the same REST API the app actually uses. redirect:"manual" so an
     // expired session (which 302s to the login page) isn't mistaken for a live
@@ -154,15 +162,49 @@ async function sessionActive(org, force = false) {
       redirect: "manual",
       signal: AbortSignal.timeout(5000),
     });
-    ok = res.status === 200 || res.status === 403;
-  } catch { ok = false; }
-  sessionOkCache.set(org.apiHost, { at: now, ok });
-  return ok;
+    if (res.status === 200 || res.status === 403) {
+      st = { ok: true, blocked: false, reason: "" };
+    } else if (res.status === 401 || res.status === 0 || (res.status >= 300 && res.status < 400)) {
+      // Expired session / login redirect (undici surfaces a manual-redirect 3xx
+      // as status 0, type "opaqueredirect") — treat as logged out (dead).
+      st = { ok: false, blocked: false, reason: "" };
+    } else {
+      // Salesforce answered but refused the call (e.g. 400 INSUFFICIENT_ACCESS
+      // for an IP restriction). The session is valid; the org just isn't usable
+      // from here — carry the exact message so the operator knows why.
+      st = { ok: false, blocked: true, reason: await sfErrorMessage(res) };
+    }
+  } catch { st = { ok: false, blocked: false, reason: "" }; }
+  sessionStatusCache.set(org.apiHost, { at: now, st });
+  return st;
+}
+// Pull a human-readable message out of a Salesforce REST error response body
+// (an array of {message, errorCode}); fall back to the HTTP status.
+async function sfErrorMessage(res) {
+  try {
+    const data = JSON.parse(await res.text());
+    const first = Array.isArray(data) ? data[0] : data;
+    if (first && first.message) {
+      return first.errorCode && !first.message.includes(first.errorCode)
+        ? `${first.message} (${first.errorCode})`
+        : first.message;
+    }
+  } catch {}
+  return `Salesforce refused the API request (HTTP ${res.status}).`;
 }
 async function listOrgsForUi(force = false) {
   const orgs = getOrgs(force);
-  const checked = await Promise.all(orgs.map(async (o) => ({ o, ok: await sessionActive(o, force) })));
-  return checked.filter((c) => c.ok).map((c) => ({ value: c.o.apiHost, label: c.o.label }));
+  const checked = await Promise.all(orgs.map(async (o) => ({ o, st: await sessionActive(o, force) })));
+  // List working orgs *and* blocked-but-valid ones (so a real login is never
+  // silently hidden — the operator sees the org and can read why it's unusable);
+  // hide only dead/expired sessions.
+  return checked
+    .filter((c) => c.st.ok || c.st.blocked)
+    .map((c) => ({
+      value: c.o.apiHost,
+      label: c.o.label,
+      ...(c.st.blocked ? { blocked: true, reason: c.st.reason } : {}),
+    }));
 }
 
 async function listLogs(apiHost, mins) {

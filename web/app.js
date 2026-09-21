@@ -35,6 +35,7 @@ const state = {
   flame: null,             // { root, range:[lo,hi] } current flame-graph view
   varPick: null,           // variable name selected in the Vars view
   sfEnabled: null,         // Set of MCP keys enabled for the Salesforce search (persists across opens)
+  orgBlocked: {},          // apiHost -> reason for orgs whose session is valid but the API is refused (e.g. IP restriction)
 };
 const POLL_MS = 5000;
 const MULTI_BUDGET = 150000; // total chars sent for multi-log analysis
@@ -246,8 +247,13 @@ async function loadOrgs({ fresh = false } = {}) {
     // Only touch the DOM when the set of live orgs actually changed. Rebuilding
     // the <select> on every poll flickered it (and could close it mid-choice);
     // this also lets us detect the moment a newly logged-in org first appears.
-    const sig = orgs.map((o) => `${o.value} ${o.label}`).join("|") || "none";
+    const sig = orgs.map((o) => `${o.value} ${o.label} ${o.blocked ? "!" + (o.reason || "") : ""}`).join("|") || "none";
     if (sig === state.orgsSig) return;
+    // Remember which orgs are logged-in-but-unusable (valid session, API refused —
+    // e.g. an IP restriction), keyed by apiHost, so the change handler can surface
+    // the exact Salesforce reason when one is picked.
+    state.orgBlocked = {};
+    for (const o of orgs) if (o.blocked) state.orgBlocked[o.value] = o.reason || "This org can't be used from here.";
     const prev = els.orgSelect.value;
     // The org we were viewing is gone (logged out / session expired).
     const prevGone = !!prev && !orgs.some((o) => o.value === prev);
@@ -2664,7 +2670,18 @@ function bind() {
   // logging. Use "Start debug logging" for that.) With auto OFF we fall back to
   // the manual time-window + Fetch flow.
   els.orgSelect.addEventListener("change", () => {
-    state.org = els.orgSelect.value;
+    const val = els.orgSelect.value;
+    // A logged-in-but-unusable org (valid Chrome session, but Salesforce refuses
+    // the API — e.g. an IP restriction). Don't switch to it: every call would
+    // fail the same way. Stay on the current page, flag it with a toast error,
+    // and revert the picker to whatever was selected before.
+    const blocked = val && state.orgBlocked[val];
+    if (blocked) {
+      toast(blocked, "error", `Can't use ${val}`);
+      els.orgSelect.value = state.org || "";
+      return;
+    }
+    state.org = val;
     state.fetched = false;
     stopPolling();
     resetView();
